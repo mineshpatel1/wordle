@@ -3,12 +3,14 @@ import os
 from random import randrange
 from enum import Enum
 from utils import log
-from typing import Optional, Union
+from typing import List, Dict, Optional, Union
 
 
 WORD_SIZE = 5
 NUM_GUESSES = 6
-WORD_LIST = os.path.join(os.path.dirname(__file__), 'word_list.txt')
+BASE_DIR = os.path.dirname(__file__)
+WORD_LIST = os.path.join(BASE_DIR, 'word_list_uk.txt')
+ANSWER_LIST = os.path.join(BASE_DIR, )
 
 
 class WrongWordSize(ValueError):
@@ -40,7 +42,7 @@ class Word:
         return len(set(self.word)) == len(self.word)
 
     @property
-    def letter_map(self) -> dict[str, int]:
+    def letter_map(self) -> Dict[str, int]:
         out = {}
         for char in self.word:
             out[char] = out.get(char, 0)
@@ -48,7 +50,7 @@ class Word:
         return out
 
     @property
-    def repeated_letters(self) -> list[str]:
+    def repeated_letters(self) -> List[str]:
         return [k for k, v in self.letter_map.items() if v > 1]
 
     def __str__(self):
@@ -100,13 +102,13 @@ class Game:
     def __init__(
         self,
         answer: Union[str, Word],
-        word_list: Optional[list[Word]] = None
+        word_list: Optional[List[Word]] = None
     ):
         self.answer: Word = Word(answer) if isinstance(answer, str) else answer
         self.num_guesses: int = NUM_GUESSES
         self.turn: int = 0
-        self.guesses: list[Guess] = []
-        self.word_list: list[Word] = word_list or load_words()
+        self.guesses: List[Guess] = []
+        self.word_list: List[Word] = word_list or load_words()
 
     @property
     def is_over(self) -> bool:
@@ -181,12 +183,20 @@ class Game:
         return out
 
 
-def load_words() -> list[Word]:
+def load_words(file_path: str = WORD_LIST) -> List[Word]:
     word_list = []
-    with open(WORD_LIST, 'r') as f:
+    with open(file_path, 'r') as f:
         for line in f.readlines():
             word_list.append(Word(line.strip()))
     return word_list
+
+
+def sanitise_word_list(file_path: str = WORD_LIST):
+    word_list = load_words(file_path)
+    flat_words = [w.word for w in word_list]
+    flat_words = sorted(flat_words)
+    with open(file_path, 'w') as f:
+        f.write('\n'.join(flat_words))
 
 
 def play_game():
