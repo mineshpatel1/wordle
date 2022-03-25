@@ -3,7 +3,7 @@ import os
 from random import randrange
 from enum import Enum
 from utils import log
-from typing import List, Dict, Optional, Union
+from typing import Optional, Union
 
 
 WORD_SIZE = 5
@@ -42,7 +42,7 @@ class Word:
         return len(set(self.word)) == len(self.word)
 
     @property
-    def letter_map(self) -> Dict[str, int]:
+    def letter_map(self) -> dict[str, int]:
         out = {}
         for char in self.word:
             out[char] = out.get(char, 0)
@@ -50,11 +50,14 @@ class Word:
         return out
 
     @property
-    def repeated_letters(self) -> List[str]:
+    def repeated_letters(self) -> list[str]:
         return [k for k, v in self.letter_map.items() if v > 1]
 
     def __str__(self):
         return self.word
+
+    def __repr__(self):
+        return str(self)
 
     def __eq__(self, other):
         return self.word == other.word
@@ -65,7 +68,7 @@ class Letter:
         self,
         guess: str,
         position: int,
-        answer: Word,
+        answer: Optional[Word] = None,
         override: Optional[GuessState] = None,
     ):
         assert len(guess) == 1, "guess and answer must be single letters."
@@ -86,8 +89,17 @@ class Letter:
         else:
             return GuessState.WRONG
 
+    def __eq__(self, other) -> bool:
+        return self.guess == other.guess and self.position == other.position
+
+    def __hash__(self) -> int:
+        return hash(self.guess + str(self.position))
+
     def __str__(self) -> str:
         return self.guess.upper()
+
+    def __repr__(self) -> str:
+        return str(self)
 
 
 class Guess(list):
@@ -102,13 +114,13 @@ class Game:
     def __init__(
         self,
         answer: Union[str, Word],
-        word_list: Optional[List[Word]] = None
+        word_list: Optional[list[Word]] = None
     ):
         self.answer: Word = Word(answer) if isinstance(answer, str) else answer
         self.num_guesses: int = NUM_GUESSES
         self.turn: int = 0
-        self.guesses: List[Guess] = []
-        self.word_list: List[Word] = word_list or load_words()
+        self.guesses: list[Guess] = []
+        self.word_list: list[Word] = word_list or load_words()
 
     @property
     def is_over(self) -> bool:
@@ -128,6 +140,56 @@ class Game:
     @property
     def last_guess(self) -> Guess:
         return self.guesses[-1]
+
+    @property
+    def possible_answers(self) -> list[Word]:
+        return self.filter_words_from_info(*self.information)
+
+    @property
+    def information_value(self) -> float:
+        return 1 / len(self.possible_answers)
+
+    @property
+    def information(self) -> tuple[set[Letter], set[Letter], set[str]]:
+        """
+        Produces the summary of information from all the current guesses in the game.
+
+        Returns:
+            Tuple of correct letters, wrong position letters and letters not in the word.
+        """
+        correct = set()
+        wrong_position = set()
+        not_in_word = set()
+
+        # Aggregate guess information
+        for guess in self.guesses:
+            for letter in guess:
+                match letter.state:
+                    case GuessState.CORRECT:
+                        correct.add(letter)
+                    case GuessState.POSITION:
+                        wrong_position.add(letter)
+                    case GuessState.WRONG:
+                        not_in_word.add(letter.guess)
+        return correct, wrong_position, not_in_word
+
+    def filter_words_from_info(
+        self,
+        correct:
+        set[Letter],
+        wrong_position: set[Letter],
+        not_in_word: set[str],
+    ) -> list[Word]:
+        possible_words = []
+        for word in self.word_list:
+            if (
+                    all(c.guess == word.word[c.position] for c in correct) and
+                    all(p.guess in word.word for p in wrong_position) and
+                    all(p.guess != word.word[p.position] for p in wrong_position) and
+                    all(n not in word.word for n in not_in_word)
+            ):
+                possible_words.append(word)
+        return possible_words
 
     def guess(self, _guess: str) -> bool:
         if self.is_over:
@@ -183,7 +245,7 @@ class Game:
         return out
 
 
-def load_words(file_path: str = WORD_LIST) -> List[Word]:
+def load_words(file_path: str = WORD_LIST) -> list[Word]:
     word_list = []
     with open(file_path, 'r') as f:
         for line in f.readlines():
@@ -217,6 +279,7 @@ def play_game():
 
 def main():
     play_game()
+
 
 
 if __name__ == '__main__':
