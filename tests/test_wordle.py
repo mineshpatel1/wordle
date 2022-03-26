@@ -1,5 +1,5 @@
 import unittest
-from wordle import Game, Letter, Word, WrongWordSize, WORD_SIZE
+from wordle import Game, GuessState, Letter, Word, WrongWordSize, WORD_SIZE
 
 
 class Words(unittest.TestCase):
@@ -28,7 +28,7 @@ class Words(unittest.TestCase):
         game.guess('pious')
         self.assertEqual(str(game.last_guess), '⬛⬛🟩⬛🟨')
         game.guess('slosh')
-        self.assertEqual(str(game.last_guess), '⬛⬛🟩🟩⬛')
+        self.assertEqual(str(game.last_guess), '⬛⬛🟩🟩🟨')
         game.guess('ghost')
         self.assertEqual(str(game.last_guess), '🟩🟩🟩🟩🟩')
 
@@ -47,23 +47,50 @@ class Words(unittest.TestCase):
         game.guess('keeps')
         self.assertEqual(str(game.last_guess), '⬛🟨⬛⬛⬛')
 
-    def guess_filter(self):
+        game = Game('koran')
+        game.guess('aaron')
+        self.assertEqual(str(game.last_guess), '🟨⬛🟩🟨🟩')
+
+    def test_guess_filter(self):
         game = Game('chest')
         game.guess('crane')
-        self.assertEqual(game.information, ({Letter('C', 0)}, {Letter('E', 4)}, {'A', 'R', 'N'}))
+        self.assertEqual(
+            game.information,
+            (
+                {Letter('C', 0, GuessState.CORRECT)},
+                {Letter('E', 4, GuessState.POSITION)},
+                {'A', 'R', 'N'},
+            )
+        )
         self.assertEqual(len(game.possible_answers), 46)
         game.guess('pious')
         self.assertEqual(len(game.possible_answers), 1)
         self.assertEqual(game.possible_answers[0].word, 'CHEST')
 
         correct = set()
-        in_word = {Letter('E', 4), Letter('P', 0), Letter('O', 2)}
+        in_word = {
+            Letter('E', 4, GuessState.POSITION),
+            Letter('P', 0, GuessState.POSITION),
+            Letter('O', 2, GuessState.POSITION),
+        }
         not_in_word = {'C', 'R', 'I', 'U', 'S'}
         possible = Game('chest').filter_words_from_info(correct, in_word, not_in_word)
         self.assertEqual(
             [w.word for w in possible],
             ['BEBOP', 'DEPOT', 'DOPED', 'DOPEY', 'HOPED', 'LOPED', 'MOPED', 'OPTED', 'TEMPO', 'TOPED'],
         )
+
+        game = Game('abbot')
+        game.guess('aaron')
+        self.assertEqual(len(game.possible_answers), 15)
+
+        game = Game('beach')
+        game.guess('aaron')
+        self.assertEqual(len(game.possible_answers), 875)
+
+        game = Game('koran')
+        game.guess('aaron')
+        self.assertEqual(len(game.possible_answers), 2)
 
 
 if __name__ == '__main__':

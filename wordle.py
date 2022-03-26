@@ -1,16 +1,24 @@
+from __future__ import annotations
+
 import re
 import os
+import json
+import math
+import multiprocessing
+import time
 from random import randrange
 from enum import Enum
 from utils import log
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
+WordDb = dict[str, dict[str, float]]
 
 WORD_SIZE = 5
 NUM_GUESSES = 6
 BASE_DIR = os.path.dirname(__file__)
-WORD_LIST = os.path.join(BASE_DIR, 'word_list_uk.txt')
-ANSWER_LIST = os.path.join(BASE_DIR, )
+WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
+WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
+WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_db.json')
 
 
 class WrongWordSize(ValueError):
@@ -22,6 +30,15 @@ class GuessState(Enum):
     POSITION = '🟨'
     CORRECT = '🟩'
 
+    @staticmethod
+    def from_basic(basic_id: str) -> GuessState:
+        match basic_id:
+            case '.':
+                return GuessState.WRONG
+            case 'P':
+                return GuessState.POSITION
+            case 'C':
+                return GuessState.CORRECT
 
 class Word:
     def __init__(self, word: str):
@@ -53,6 +70,47 @@ class Word:
     def repeated_letters(self) -> list[str]:
         return [k for k, v in self.letter_map.items() if v > 1]
 
+    def get_expectation_map(
+        self,
+        word_list: Optional[list[Word]] = None,
+    ) -> dict[str, float]:
+        """
+        Returns:
+            dict of guess pattern keys and probability of occurrence in the word list.
+        """
+
+        word_list = word_list or load_words(WORD_LIST)
+        expectation_map = {}
+        for answer in word_list:
+            guess_str = guess_mask_fast(self.word, answer.word)
+            expectation_map[guess_str] = expectation_map.get(guess_str, 0)
+            expectation_map[guess_str] += 1
+
+        return {guess: num / len(word_list) for guess, num in expectation_map.items()}
+
+    def get_information_map(
+        self,
+        word_list: Optional[list[Word]] = None,
+    ) -> dict[str, float]:
+        """
+        Returns:
+            dict of guess pattern keys and the information value for the first guess.
+        """
+
+        word_list = word_list or load_words(WORD_LIST)
+        info_map = {}
+        for answer in word_list:
+            guess_str = guess_mask_fast(self.word, answer.word)
+            if guess_str not in info_map:
+                game = Game(answer, word_list=word_list)
+                game.guess(self.word)
+                try:
+                    info_map[guess_str] = game.information_value
+                except ValueError as err:
+                    log.error(f"{self} {answer}")
+                    raise err
+        return info_map
+
     def __str__(self):
         return self.word
 
@@ -66,28 +124,14 @@ class Word:
 class Letter:
     def __init__(
         self,
-        guess: str,
+        letter: str,
         position: int,
-        answer: Optional[Word] = None,
-        override: Optional[GuessState] = None,
+        state: GuessState,
     ):
-        assert len(guess) == 1, "guess and answer must be single letters."
-        self.guess = guess.upper()
+        assert len(letter) == 1, "guess and answer must be single letters."
+        self.guess = letter.upper()
         self.position = position
-        self.answer = answer
-        self.override = override
-
-    @property
-    def state(self) -> GuessState:
-        if self.override:
-            return self.override
-
-        if self.guess == self.answer.word[self.position]:
-            return GuessState.CORRECT
-        elif self.guess in self.answer.word:
-            return GuessState.POSITION
-        else:
-            return GuessState.WRONG
+        self.state = state
 
     def __eq__(self, other) -> bool:
         return self.guess == other.guess and self.position == other.position
@@ -105,6 +149,13 @@ class Letter:
 class Guess(list):
     def __init__(self, *args, **kwargs):
         super(Guess, self).__init__(*args, **kwargs)
+
+    @property
+    def basic_str(self) -> str:
+        return str(self)\
+            .replace('⬛', '.') \
+            .replace('🟨', 'P') \
+            .replace('🟩', 'C')
 
     def __str__(self) -> str:
         return ''.join(letter.state.value for letter in self)
@@ -130,8 +181,7 @@ class Game:
         if len(self.guesses) == 0:
             return False
 
-        guess_states = self.guesses[-1]
-        return all(g.state == GuessState.CORRECT for g in guess_states)
+        return all(g.state == GuessState.CORRECT for g in self.last_guess)
 
     @property
     def score(self) -> int:
@@ -147,7 +197,12 @@ class Game:
 
     @property
     def information_value(self) -> float:
-        return 1 / len(self.possible_answers)
+        """
+        Returns:
+            Information value, in bits, currently known in the game. Each bit
+            represents a halving of the number of remaining possibilities.
+        """
+        return -1 * math.log(len(self.possible_answers) / len(self.word_list))
 
     @property
     def information(self) -> tuple[set[Letter], set[Letter], set[str]]:
@@ -175,18 +230,19 @@ class Game:
 
     def filter_words_from_info(
         self,
-        correct:
-        set[Letter],
+        correct: set[Letter],
         wrong_position: set[Letter],
         not_in_word: set[str],
     ) -> list[Word]:
         possible_words = []
+        answer_has_letter = {str(c) for c in correct}.union({str(c) for c in wrong_position})
         for word in self.word_list:
             if (
-                    all(c.guess == word.word[c.position] for c in correct) and
-                    all(p.guess in word.word for p in wrong_position) and
-                    all(p.guess != word.word[p.position] for p in wrong_position) and
-                    all(n not in word.word for n in not_in_word)
+                all(c.guess == word.word[c.position] for c in correct) and
+                all(p.guess in word.word for p in wrong_position) and
+                all(p.guess != word.word[p.position] for p in wrong_position) and
+                # For incorrect letters, need to make sure multiple occurrences are catered for
+                all(n not in word.word for n in not_in_word if n not in answer_has_letter)
             ):
                 possible_words.append(word)
         return possible_words
@@ -206,31 +262,16 @@ class Game:
             return False  # Not a valid word, guess again
 
         guess_states = Guess()
-        for i, letter in enumerate(guess.word):
-            guess_states.append(Letter(letter, i, self.answer))
+        guess_str = guess_mask_fast(guess.word, self.answer.word)
 
-        # Handle repeated letter behaviour:
-        # https://nerdschalk.com/wordle-same-letter-twice-rules-explained-how-does-it-work/
-        if guess.repeated_letters:
-            for repeated_letter in guess.repeated_letters:
-                if repeated_letter not in self.answer.word:
-                    continue
-
-                # Get the total occurrences of the letter in the answer
-                num_in_answer = self.answer.letter_map[repeated_letter]
-                num_matched = 0
-
-                # Count all the exact matches first
-                for letter in guess_states:
-                    if letter.state == GuessState.CORRECT:
-                        num_matched += 1
-
-                # For remaining occurrences, ensure only the number of occurrences in the answer are indicated.
-                for letter in guess_states:
-                    if letter.state == GuessState.POSITION:
-                        num_matched += 1
-                        if num_matched > num_in_answer:
-                            letter.override = GuessState.WRONG
+        for i, basic_guess in enumerate(guess_str):
+            guess_states.append(
+                Letter(
+                    guess.word[i],
+                    i,
+                    GuessState.from_basic(basic_guess),
+                )
+            )
 
         self.guesses.append(guess_states)
         return True
@@ -251,6 +292,18 @@ def load_words(file_path: str = WORD_LIST) -> list[Word]:
         for line in f.readlines():
             word_list.append(Word(line.strip()))
     return word_list
+
+
+def load_word_db(file_path: str = WORD_DB) -> WordDb:
+    with open(file_path, 'r') as f:
+        return json.load(f)
+
+
+def save_word_db(word_db: WordDb, file_path: str = WORD_DB):
+    current_db = load_word_db(file_path)
+    current_db.update(word_db)
+    with open(file_path, 'w') as f:
+        json.dump(word_db, f)
 
 
 def sanitise_word_list(file_path: str = WORD_LIST):
@@ -277,9 +330,100 @@ def play_game():
     print(f"Answer: {game.answer}")
 
 
+def _parallelise_word_process(
+    func: Callable,
+    input_word_list: list[Word],
+    word_list: Optional[list[Word]] = None,
+    num_processes: int = 5,
+) -> dict[str, dict[str, float]]:
+    start_time = time.time()
+
+    with multiprocessing.Pool(num_processes) as pool:
+        expectations = pool.starmap(
+            func,
+            [(w, word_list) for w in input_word_list],
+        )
+
+    log.info(f"Took {time.time() - start_time}s to process {len(input_word_list)} words.")
+    return dict(zip([w.word for w in input_word_list], expectations))
+
+
+def get_many_expectations(
+    input_word_list: list[Word],
+    word_list: Optional[list[Word]] = None,
+    num_processes: int = 5,
+) -> dict[str, dict[str, float]]:
+    return _parallelise_word_process(
+        Word.get_expectation_map,
+        input_word_list,
+        word_list,
+        num_processes,
+    )
+
+
+def get_many_info_values(
+    input_word_list: list[Word],
+    word_list: Optional[list[Word]] = None,
+    num_processes: int = 5,
+) -> dict[str, dict[str, float]]:
+    return _parallelise_word_process(
+        Word.get_information_map,
+        input_word_list,
+        word_list,
+        num_processes,
+    )
+
+
+def guess_mask_fast(word: str, answer: str):
+    """Re-implementation of the guessing logic with basic types. Much faster for generation of the word database."""
+    guess = ''
+    l_count = {}
+    for i, letter in enumerate(word):
+        l_count[letter] = l_count.get(letter, 0)
+        l_count[letter] += 1
+
+        if answer[i] == letter:
+            guess += 'C'
+        elif letter in answer:
+            guess += 'P'
+        else:
+            guess += '.'
+
+    repeated_letters = {k for k, v in l_count.items() if v > 1}
+
+    if repeated_letters:
+        answer_l_count = {}
+        for letter in answer:
+            answer_l_count[letter] = answer_l_count.get(letter, 0)
+            answer_l_count[letter] += 1
+
+        for repeated_letter in repeated_letters:
+            if repeated_letter not in answer:
+                continue
+
+            # Get the total occurrences of the letter in the answer
+            num_in_answer = answer_l_count[repeated_letter]
+            num_matched = 0
+
+            # Count all the exact matches first
+            for i, letter in enumerate(guess):
+                if letter == 'C' and word[i] == repeated_letter:
+                    num_matched += 1
+
+            # For remaining occurrences, ensure only the number of occurrences in the answer are indicated.
+            for i, letter in enumerate(guess):
+                if (
+                    letter == 'P' and
+                    word[i] == repeated_letter
+                ):
+                    num_matched += 1
+                    if num_matched > num_in_answer:
+                        guess = guess[:i] + '.' + guess[i + 1:]
+    return guess
+
+
 def main():
     play_game()
-
 
 
 if __name__ == '__main__':
