@@ -4,6 +4,8 @@ import re
 import os
 import json
 import math
+import random
+import time
 from random import randrange
 from enum import Enum
 from utils import log, multi_process
@@ -19,6 +21,7 @@ NUM_GUESSES = 6
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
+ANSWER_LIST = os.path.join(WORD_LIST_DIR, 'answers.txt')
 GUESS_DB = os.path.join(WORD_LIST_DIR, 'uk_guess_db.json')
 WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_word_db.json')
 
@@ -48,10 +51,10 @@ class Word:
     def __init__(
         self,
         word: str,
-        entropy_0: Optional[float] = None,
+        entropy: Optional[float] = None,
     ):
         self.word = word
-        self.entropy_0 = entropy_0
+        self.entropy = entropy
 
     @property
     def word(self):
@@ -61,7 +64,7 @@ class Word:
     def word(self, word):
         self._word = word
         if len(word) != WORD_SIZE:
-            raise WrongWordSize(f"Only words of size {WORD_SIZE} allowed.")
+            raise WrongWordSize(f"Invalid word {word}: Only words of size {WORD_SIZE} allowed.")
 
     @property
     def has_unique_letters(self):
@@ -81,7 +84,7 @@ class Word:
 
     @property
     def json(self) -> dict[str, float]:
-        return {'H0': self.entropy_0}
+        return {'H': self.entropy}
 
     def get_probability_map(
         self,
@@ -189,9 +192,12 @@ class Game:
         if len(self.guesses) >= self.num_guesses:
             return True
 
+        return self.is_won
+
+    @property
+    def is_won(self) -> bool:
         if len(self.guesses) == 0:
             return False
-
         return all(g.state == GuessState.CORRECT for g in self.last_guess)
 
     @property
@@ -252,12 +258,12 @@ class Game:
             self.word_list,
         )
 
-    def guess(self, _guess: str) -> bool:
+    def guess(self, _guess: Union[str, Word]) -> bool:
         if self.is_over:
             return False  # No more guesses remaining
 
         try:
-            guess = Word(_guess)
+            guess = Word(str(_guess))
         except WrongWordSize:
             raise ValueError(f"{_guess} is not {WORD_SIZE} letters, please try again.")
 
@@ -421,24 +427,28 @@ def play_game():
 
 
 def get_many_probabilities(
-    possible_words: list[Word]
+    possible_words: list[Word],
+    verbose: bool = False,
 ) -> WordGuessMap:
     input_list = [(w, possible_words) for w in possible_words]
     return multi_process(
         input_list,
         Word.get_probability_map,
         zip_with=lambda word, _word_list: str(word),
+        verbose=verbose,
     )
 
 
 def get_many_info_values(
     possible_words: list[Word],
+    verbose: bool = False,
 ) -> WordGuessMap:
     input_list = [(w, possible_words) for w in possible_words]
     return multi_process(
         input_list,
         Word.get_information_map,
         zip_with=lambda word, _word_list: str(word),
+        verbose=verbose,
     )
 
 
@@ -461,7 +471,7 @@ def merge_guess_maps(
 
 def compute_entropy(
     possible_words: list[Word],
-):
+) -> dict[str, dict[str, float]]:
     probs = get_many_probabilities(possible_words)
     info = get_many_info_values(possible_words)
 
@@ -474,9 +484,9 @@ def compute_entropy(
         for guess, pi in db[word].items():
             entropy += pi['p'] * pi['I']
         entropy_map[str(word)] = {
-            'H0': entropy,
+            'H': entropy,
         }
-    save_word_db(entropy_map)
+    return entropy_map
 
 
 def crude_opening_pairs():
@@ -515,11 +525,67 @@ def crude_opening_pairs():
         log.info(w)
 
 
+def sort_by_entropy(entropy_map: WordDb) -> list[Word]:
+    word_list = [Word(w, data['H']) for w, data in entropy_map.items()]
+    return sorted(word_list, key=lambda w: -w.entropy)
+
+
+def bot_play(
+    word: Union[str, Word],
+    initial_guess: str = 'RATES',
+    verbose: bool = True,
+) -> int:
+    game = Game(word)
+    game.guess(initial_guess)
+
+    while not game.is_over:
+        e_map = compute_entropy(game.possible_answers)
+        best_words = sort_by_entropy(e_map)
+        game.guess(best_words[0])
+
+    if verbose:
+        log.info(f'Guessing {word}...')
+        log.info(game)
+    return game.score if game.is_won else -1
+
+
+def test_bot(
+    k: Optional[int] = None,
+    verbose: bool = False,
+):
+    scores = []
+    failed = []
+    word_list = load_words(ANSWER_LIST)
+
+    if k:
+        word_list = random.choices(word_list, k=k)
+
+    start = time.time()
+    for i, word in enumerate(word_list):
+        score = bot_play(word, verbose=verbose)
+        if not verbose:
+            print(
+                f'\rTesting bot: {i + 1}/{len(word_list)} [{round(100 * (i + 1) / len(word_list))}%]',
+                end="",
+            )
+        if score == -1:
+            failed.append(word)
+        else:
+            scores.append(score)
+
+    print()
+    if failed:
+        log.newline()
+        log.error("Failed to win the following games:")
+        for failure in failed:
+            log.error(f"    {failure}")
+    log.newline()
+    log.info(f"Time elapsed: {round(time.time() - start, 2)}s")
+    log.info(f"Average score: {round(sum(scores) / len(scores), 2)}")
+
+
 def main():
-    word_db = load_word_db()
-    all_words = sorted(word_db.values(), key=lambda w: -w.entropy_0)
-    for word in all_words[:50]:
-        log.info(f"{str(word)}: {word.entropy_0}")
+    play_game()
 
 
 if __name__ == '__main__':

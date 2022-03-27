@@ -150,6 +150,7 @@ def worker(
     func: Callable,
     output: dict[int, Any],
     num_jobs: int,
+    verbose: bool = True,
 ):
     """
     Multiprocessing worker. Needs to be top level because it relies on being pickled.
@@ -162,7 +163,8 @@ def worker(
 
         try:
             output[index] = func(*args)
-            print_progress(func.__name__, len(output) / num_jobs)
+            if verbose:
+                print_progress(func.__name__, len(output) / num_jobs)
         except Exception as err:
             log.error(str(err))
             raise err
@@ -173,6 +175,7 @@ def multi_process(
     func: Callable,
     num_processes: int = 2,
     zip_with: Optional[Callable] = None,
+    verbose: bool = True,
 ) -> Union[list[Any], dict[Any, Any]]:
     main_queue = multiprocessing.Queue()
     manager = multiprocessing.Manager()
@@ -184,7 +187,7 @@ def multi_process(
     for i in range(num_processes):
         p = multiprocessing.Process(
             target=worker,
-            args=(main_queue, func, output, len(input_list)),
+            args=(main_queue, func, output, len(input_list), verbose),
         )
         p.daemon = True
         p.start()
@@ -200,11 +203,15 @@ def multi_process(
     main_queue.close()
     main_queue.join_thread()
 
-    print_progress(func.__name__, 0)
+    if verbose:
+        print_progress(func.__name__, 0)
+
     for p in processes:
         p.join()
-    print()
-    log.info(f"Time elapsed: {round(time.time() - start, 2)}s")
+
+    if verbose:
+        print()
+        log.info(f"Time elapsed: {round(time.time() - start, 2)}s")
 
     output = [output[k] for k in sorted(output.keys())]  # Sort output by key
     if zip_with:

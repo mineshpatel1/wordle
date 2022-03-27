@@ -92,6 +92,17 @@ class Words(unittest.TestCase):
         game.guess('aaron')
         self.assertEqual(len(game.possible_answers), 2)
 
+    def test_probability(self):
+        game = Game('chest')
+        game.guess('rates')
+
+        word = Word('chest')
+        p_map = word.get_probability_map(game.possible_answers)
+        total = 0
+        for guess, prob in p_map.items():
+            total += prob
+        self.assertEqual(round(total, 2), 1.0)
+
 
 if __name__ == '__main__':
     unittest.main()
