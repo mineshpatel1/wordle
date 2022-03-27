@@ -4,21 +4,21 @@ import re
 import os
 import json
 import math
-import multiprocessing
-import time
 from random import randrange
 from enum import Enum
-from utils import log
-from typing import Callable, Optional, Union
+from utils import log, multi_process
+from typing import Optional, Union
 
-WordDb = dict[str, dict[str, float]]
+GuessMap = dict[str, float]
+WordGuessMap = dict[str, GuessMap]
+WordDb = dict[str, WordGuessMap]
 
 WORD_SIZE = 5
 NUM_GUESSES = 6
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
-WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_db.json')
+WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_guess_db.json')
 
 
 class WrongWordSize(ValueError):
@@ -39,6 +39,7 @@ class GuessState(Enum):
                 return GuessState.POSITION
             case 'C':
                 return GuessState.CORRECT
+
 
 class Word:
     def __init__(self, word: str):
@@ -70,7 +71,7 @@ class Word:
     def repeated_letters(self) -> list[str]:
         return [k for k, v in self.letter_map.items() if v > 1]
 
-    def get_expectation_map(
+    def get_probability_map(
         self,
         word_list: Optional[list[Word]] = None,
     ) -> dict[str, float]:
@@ -80,13 +81,13 @@ class Word:
         """
 
         word_list = word_list or load_words(WORD_LIST)
-        expectation_map = {}
+        prob_map = {}
         for answer in word_list:
-            guess_str = guess_mask_fast(self.word, answer.word)
-            expectation_map[guess_str] = expectation_map.get(guess_str, 0)
-            expectation_map[guess_str] += 1
+            guess_str = _guess_mask(self.word, answer.word)
+            prob_map[guess_str] = prob_map.get(guess_str, 0)
+            prob_map[guess_str] += 1
 
-        return {guess: num / len(word_list) for guess, num in expectation_map.items()}
+        return {guess: num / len(word_list) for guess, num in prob_map.items()}
 
     def get_information_map(
         self,
@@ -100,7 +101,7 @@ class Word:
         word_list = word_list or load_words(WORD_LIST)
         info_map = {}
         for answer in word_list:
-            guess_str = guess_mask_fast(self.word, answer.word)
+            guess_str = _guess_mask(self.word, answer.word)
             if guess_str not in info_map:
                 game = Game(answer, word_list=word_list)
                 game.guess(self.word)
@@ -254,15 +255,13 @@ class Game:
         try:
             guess = Word(_guess)
         except WrongWordSize:
-            log.warning(f"{_guess} is not {WORD_SIZE} letters, please try again.")
-            return False  # Not a valid word, guess again
+            raise ValueError(f"{_guess} is not {WORD_SIZE} letters, please try again.")
 
         if guess not in self.word_list or not re.match(r'[a-zA-Z]+$', guess.word):
-            log.warning(f"{guess} is not a valid word, please try again.")
-            return False  # Not a valid word, guess again
+            raise ValueError(f"{guess} is not a valid word, please try again.")
 
         guess_states = Guess()
-        guess_str = guess_mask_fast(guess.word, self.answer.word)
+        guess_str = _guess_mask(guess.word, self.answer.word)
 
         for i, basic_guess in enumerate(guess_str):
             guess_states.append(
@@ -286,96 +285,8 @@ class Game:
         return out
 
 
-def load_words(file_path: str = WORD_LIST) -> list[Word]:
-    word_list = []
-    with open(file_path, 'r') as f:
-        for line in f.readlines():
-            word_list.append(Word(line.strip()))
-    return word_list
-
-
-def load_word_db(file_path: str = WORD_DB) -> WordDb:
-    with open(file_path, 'r') as f:
-        return json.load(f)
-
-
-def save_word_db(word_db: WordDb, file_path: str = WORD_DB):
-    current_db = load_word_db(file_path)
-    current_db.update(word_db)
-    with open(file_path, 'w') as f:
-        json.dump(word_db, f)
-
-
-def sanitise_word_list(file_path: str = WORD_LIST):
-    word_list = load_words(file_path)
-    flat_words = [w.word for w in word_list]
-    flat_words = sorted(flat_words)
-    with open(file_path, 'w') as f:
-        f.write('\n'.join(flat_words))
-
-
-def play_game():
-    word_list = load_words()
-    game = Game(
-        answer=word_list[randrange(len(word_list))],  # Pick a word at random
-        word_list=word_list,
-    )
-
-    while not game.is_over:
-        print(f'Guess {len(game.guesses) + 1}:')
-        guess = input()
-        if game.guess(guess):
-            print(game)
-    print()
-    print(f"Answer: {game.answer}")
-
-
-def _parallelise_word_process(
-    func: Callable,
-    input_word_list: list[Word],
-    word_list: Optional[list[Word]] = None,
-    num_processes: int = 5,
-) -> dict[str, dict[str, float]]:
-    start_time = time.time()
-
-    with multiprocessing.Pool(num_processes) as pool:
-        expectations = pool.starmap(
-            func,
-            [(w, word_list) for w in input_word_list],
-        )
-
-    log.info(f"Took {time.time() - start_time}s to process {len(input_word_list)} words.")
-    return dict(zip([w.word for w in input_word_list], expectations))
-
-
-def get_many_expectations(
-    input_word_list: list[Word],
-    word_list: Optional[list[Word]] = None,
-    num_processes: int = 5,
-) -> dict[str, dict[str, float]]:
-    return _parallelise_word_process(
-        Word.get_expectation_map,
-        input_word_list,
-        word_list,
-        num_processes,
-    )
-
-
-def get_many_info_values(
-    input_word_list: list[Word],
-    word_list: Optional[list[Word]] = None,
-    num_processes: int = 5,
-) -> dict[str, dict[str, float]]:
-    return _parallelise_word_process(
-        Word.get_information_map,
-        input_word_list,
-        word_list,
-        num_processes,
-    )
-
-
-def guess_mask_fast(word: str, answer: str):
-    """Re-implementation of the guessing logic with basic types. Much faster for generation of the word database."""
+def _guess_mask(word: str, answer: str):
+    """Fast implementation of guessing logic with basic types."""
     guess = ''
     l_count = {}
     for i, letter in enumerate(word):
@@ -420,6 +331,114 @@ def guess_mask_fast(word: str, answer: str):
                     if num_matched > num_in_answer:
                         guess = guess[:i] + '.' + guess[i + 1:]
     return guess
+
+
+def load_words(file_path: str = WORD_LIST) -> list[Word]:
+    word_list = []
+    with open(file_path, 'r') as f:
+        for line in f.readlines():
+            word_list.append(Word(line.strip()))
+    return word_list
+
+
+def load_word_db(file_path: str = WORD_DB) -> WordDb:
+    with open(file_path, 'r') as f:
+        return json.load(f)
+
+
+def save_word_db(word_db: WordDb, file_path: str = WORD_DB):
+    # current_db = load_word_db(file_path)
+    # current_db.update(word_db)
+    with open(file_path, 'w') as f:
+        json.dump(word_db, f)
+
+
+def sanitise_word_list(file_path: str = WORD_LIST):
+    word_list = load_words(file_path)
+    flat_words = [w.word for w in word_list]
+    flat_words = sorted(flat_words)
+    with open(file_path, 'w') as f:
+        f.write('\n'.join(flat_words))
+
+
+def play_game():
+    word_list = load_words()
+    game = Game(
+        answer=word_list[randrange(len(word_list))],  # Pick a word at random
+        word_list=word_list,
+    )
+
+    while not game.is_over:
+        print(f'Guess {len(game.guesses) + 1}:')
+        guess = input()
+        if game.guess(guess):
+            print(game)
+    print()
+    print(f"Answer: {game.answer}")
+
+
+def get_many_probabilities(
+    input_word_list: list[Word],
+    word_list: Optional[list[Word]] = None,
+    num_processes: int = 5,
+) -> WordGuessMap:
+    input_list = [(w, word_list) for w in input_word_list]
+    return multi_process(
+        input_list,
+        Word.get_probability_map,
+        num_processes,
+        zip_with=lambda word, _word_list: str(word),
+    )
+
+
+def get_many_info_values(
+    input_word_list: list[Word],
+    word_list: Optional[list[Word]] = None,
+    num_processes: int = 5,
+) -> WordGuessMap:
+    input_list = [(w, word_list) for w in input_word_list]
+    return multi_process(
+        input_list,
+        Word.get_information_map,
+        num_processes,
+        zip_with=lambda word, _word_list: str(word),
+    )
+
+
+def merge_guess_maps(
+    prob_map: WordGuessMap,
+    info_map: WordGuessMap,
+) -> WordDb:
+    db = {}
+    for word in info_map:
+        if word in prob_map:
+            db[word] = {}
+            for guess in info_map[word]:
+                if guess in prob_map[word]:
+                    db[word][guess] = {
+                        "p": prob_map[word][guess],
+                        "I": info_map[word][guess],
+                    }
+    return db
+
+
+def compute_guess_db(
+    input_word_list: list[Word],
+    word_list: Optional[list[Word]] = None,
+):
+    word_list = word_list or load_words()
+    probs = get_many_probabilities(
+        input_word_list,
+        word_list,
+    )
+
+    info = get_many_info_values(
+        input_word_list,
+        word_list,
+    )
+
+    db = merge_guess_maps(probs, info)
+    save_word_db(db)
 
 
 def main():

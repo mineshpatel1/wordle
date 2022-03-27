@@ -1,6 +1,8 @@
+import multiprocessing
+import time
 import types
 import logging
-from typing import Optional
+from typing import Any, Callable, Optional, Union
 
 
 class ShellColor(object):
@@ -131,6 +133,86 @@ def create_logger(name: str, log_file: Optional[str] = None):
         logger.newline = types.MethodType(log_newline, logger)
 
     return logger
+
+
+def print_progress(
+    name: str,
+    progress: float,
+):
+    print(
+        f'\rProcessing: {name} [{round(100 * progress)}%]',
+        end="",
+    )
+
+
+def worker(
+    queue: multiprocessing.Queue,
+    func: Callable,
+    output: dict[int, Any],
+    num_jobs: int,
+):
+    """
+    Multiprocessing worker. Needs to be top level because it relies on being pickled.
+    """
+    while True:
+        args, index = queue.get(block=True)
+
+        if index == -1:  # Signal for ending the process
+            break
+
+        try:
+            output[index] = func(*args)
+            print_progress(func.__name__, len(output) / num_jobs)
+        except Exception as err:
+            log.error(str(err))
+            raise err
+
+
+def multi_process(
+    input_list: list[tuple[Any, ...]],
+    func: Callable,
+    num_processes: int = 2,
+    zip_with: Optional[Callable] = None,
+) -> Union[list[Any], dict[Any, Any]]:
+    main_queue = multiprocessing.Queue()
+    manager = multiprocessing.Manager()
+    output = manager.dict()
+    start = time.time()
+
+    # Declare processes
+    processes = []
+    for i in range(num_processes):
+        p = multiprocessing.Process(
+            target=worker,
+            args=(main_queue, func, output, len(input_list)),
+        )
+        p.daemon = True
+        p.start()
+        processes.append(p)
+
+    for i, input_args in enumerate(input_list):
+        main_queue.put((input_args, i))
+
+    # Send a kill signal for each process
+    for i in range(num_processes):
+        main_queue.put((None, -1))
+
+    main_queue.close()
+    main_queue.join_thread()
+
+    print_progress(func.__name__, 0)
+    for p in processes:
+        p.join()
+    print()
+    log.info(f"Time elapsed: {round(time.time() - start, 2)}s")
+
+    output = [output[k] for k in sorted(output.keys())]  # Sort output by key
+    if zip_with:
+        output = dict(zip(
+            [zip_with(*x) for x in input_list],
+            output,
+        ))
+    return output
 
 
 log = create_logger('Wordle')
