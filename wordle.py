@@ -11,14 +11,18 @@ from typing import Optional, Union
 
 GuessMap = dict[str, float]
 WordGuessMap = dict[str, GuessMap]
-WordDb = dict[str, WordGuessMap]
+GuessDb = dict[str, WordGuessMap]
+WordDb = dict[str, dict[str, float]]
 
 WORD_SIZE = 5
 NUM_GUESSES = 6
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
-WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_guess_db.json')
+GUESS_DB = os.path.join(WORD_LIST_DIR, 'uk_guess_db.json')
+WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_word_db.json')
+
+NUM_PROCESSES = 5
 
 
 class WrongWordSize(ValueError):
@@ -41,8 +45,13 @@ class GuessState(Enum):
 
 
 class Word:
-    def __init__(self, word: str):
-        self.word: str = word
+    def __init__(
+        self,
+        word: str,
+        entropy_0: Optional[float] = None,
+    ):
+        self.word = word
+        self.entropy_0 = entropy_0
 
     @property
     def word(self):
@@ -70,39 +79,41 @@ class Word:
     def repeated_letters(self) -> list[str]:
         return [k for k, v in self.letter_map.items() if v > 1]
 
+    @property
+    def json(self) -> dict[str, float]:
+        return {'H0': self.entropy_0}
+
     def get_probability_map(
         self,
-        word_list: Optional[list[Word]] = None,
+        possible_words: list[Word],
     ) -> dict[str, float]:
         """
         Returns:
             dict of guess pattern keys and probability of occurrence in the word list.
         """
 
-        word_list = word_list or load_words(WORD_LIST)
         prob_map = {}
-        for answer in word_list:
+        for answer in possible_words:
             guess_str = _guess_mask(self.word, answer.word)
             prob_map[guess_str] = prob_map.get(guess_str, 0)
             prob_map[guess_str] += 1
 
-        return {guess: num / len(word_list) for guess, num in prob_map.items()}
+        return {guess: num / len(possible_words) for guess, num in prob_map.items()}
 
     def get_information_map(
         self,
-        word_list: Optional[list[Word]] = None,
+        possible_words: list[Word],
     ) -> dict[str, float]:
         """
         Returns:
             dict of guess pattern keys and the information value for the first guess.
         """
 
-        word_list = word_list or load_words(WORD_LIST)
         info_map = {}
-        for answer in word_list:
+        for answer in possible_words:
             guess_str = _guess_mask(self.word, answer.word)
             if guess_str not in info_map:
-                game = Game(answer, word_list=word_list)
+                game = Game(answer, word_list=possible_words)
                 game.guess(self.word)
                 try:
                     info_map[guess_str] = game.information_value
@@ -355,14 +366,32 @@ def load_words(file_path: str = WORD_LIST) -> list[Word]:
     return word_list
 
 
-def load_guess_db(file_path: str = WORD_DB) -> WordDb:
+def load_guess_db(file_path: str = GUESS_DB) -> GuessDb:
     with open(file_path, 'r') as f:
         return json.load(f)
 
 
-def save_guess_db(word_db: WordDb, file_path: str = WORD_DB):
-    # current_db = load_word_db(file_path)
-    # current_db.update(word_db)
+def save_guess_db(
+    word_db: GuessDb,
+    file_path: str = GUESS_DB,
+):
+    with open(file_path, 'w') as f:
+        json.dump(word_db, f)
+
+
+def load_word_db(file_path: str = WORD_DB) -> dict[str, Word]:
+    with open(file_path, 'r') as f:
+        word_db = json.load(f)
+    return {w: Word(w, data['H0']) for w, data in word_db.items()}
+
+
+def save_word_db(
+    word_db: Union[WordDb, list[Word]],
+    file_path: str = WORD_DB,
+):
+    if isinstance(word_db, list):
+        word_db = {w.word: w.json for w in word_db}
+
     with open(file_path, 'w') as f:
         json.dump(word_db, f)
 
@@ -392,29 +421,23 @@ def play_game():
 
 
 def get_many_probabilities(
-    input_word_list: list[Word],
-    word_list: Optional[list[Word]] = None,
-    num_processes: int = 5,
+    possible_words: list[Word]
 ) -> WordGuessMap:
-    input_list = [(w, word_list) for w in input_word_list]
+    input_list = [(w, possible_words) for w in possible_words]
     return multi_process(
         input_list,
         Word.get_probability_map,
-        num_processes,
         zip_with=lambda word, _word_list: str(word),
     )
 
 
 def get_many_info_values(
-    input_word_list: list[Word],
-    word_list: Optional[list[Word]] = None,
-    num_processes: int = 5,
+    possible_words: list[Word],
 ) -> WordGuessMap:
-    input_list = [(w, word_list) for w in input_word_list]
+    input_list = [(w, possible_words) for w in possible_words]
     return multi_process(
         input_list,
         Word.get_information_map,
-        num_processes,
         zip_with=lambda word, _word_list: str(word),
     )
 
@@ -422,7 +445,7 @@ def get_many_info_values(
 def merge_guess_maps(
     prob_map: WordGuessMap,
     info_map: WordGuessMap,
-) -> WordDb:
+) -> GuessDb:
     db = {}
     for word in info_map:
         if word in prob_map:
@@ -436,23 +459,24 @@ def merge_guess_maps(
     return db
 
 
-def compute_guess_db(
-    input_word_list: list[Word],
-    word_list: Optional[list[Word]] = None,
+def compute_entropy(
+    possible_words: list[Word],
 ):
-    word_list = word_list or load_words()
-    probs = get_many_probabilities(
-        input_word_list,
-        word_list,
-    )
-
-    info = get_many_info_values(
-        input_word_list,
-        word_list,
-    )
+    probs = get_many_probabilities(possible_words)
+    info = get_many_info_values(possible_words)
 
     db = merge_guess_maps(probs, info)
     save_guess_db(db)
+    
+    entropy_map = {}
+    for word in db:
+        entropy = 0
+        for guess, pi in db[word].items():
+            entropy += pi['p'] * pi['I']
+        entropy_map[str(word)] = {
+            'H0': entropy,
+        }
+    save_word_db(entropy_map)
 
 
 def crude_opening_pairs():
@@ -492,7 +516,10 @@ def crude_opening_pairs():
 
 
 def main():
-    play_game()
+    word_db = load_word_db()
+    all_words = sorted(word_db.values(), key=lambda w: -w.entropy_0)
+    for word in all_words[:50]:
+        log.info(f"{str(word)}: {word.entropy_0}")
 
 
 if __name__ == '__main__':
