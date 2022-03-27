@@ -1,0 +1,6 @@
+V1: Entropy Algorithm only. Initial guesses: ['RATES']
+Avg Score: 3.81, 43 failures (98% success)
+
+V2: Entropy Algorithm only. Initial guesses: ['CRANE', 'PIOUS']
+Avg Score: 3.94, 30 failures (99% success)
+

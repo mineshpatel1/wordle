@@ -186,6 +186,7 @@ class Game:
         self.turn: int = 0
         self.guesses: list[Guess] = []
         self.word_list: list[Word] = word_list or load_words()
+        self._best_move: Optional[Word] = None
 
     @property
     def is_over(self) -> bool:
@@ -245,6 +246,14 @@ class Game:
                         not_in_word.add(letter.guess)
         return correct, wrong_position, not_in_word
 
+    @property
+    def best_move(self) -> Word:
+        if not self._best_move:
+            e_map = compute_entropy(self.possible_answers)
+            best_words = sort_by_entropy(e_map)
+            self._best_move = best_words[0]
+        return self._best_move
+
     def filter_words_from_info(
         self,
         correct: set[Letter],
@@ -283,6 +292,7 @@ class Game:
             )
 
         self.guesses.append(guess_states)
+        self._best_move = None
         return True
 
     def __str__(self):
@@ -489,6 +499,11 @@ def compute_entropy(
     return entropy_map
 
 
+def sort_by_entropy(entropy_map: WordDb) -> list[Word]:
+    word_list = [Word(w, data['H']) for w, data in entropy_map.items()]
+    return sorted(word_list, key=lambda w: -w.entropy)
+
+
 def crude_opening_pairs():
     db = load_guess_db()
     all_words = []
@@ -525,18 +540,15 @@ def crude_opening_pairs():
         log.info(w)
 
 
-def sort_by_entropy(entropy_map: WordDb) -> list[Word]:
-    word_list = [Word(w, data['H']) for w, data in entropy_map.items()]
-    return sorted(word_list, key=lambda w: -w.entropy)
-
-
 def bot_play(
     word: Union[str, Word],
-    initial_guess: str = 'RATES',
+    initial_guesses: Optional[list[str]] = None,
     verbose: bool = True,
 ) -> int:
     game = Game(word)
-    game.guess(initial_guess)
+    initial_guesses = initial_guesses or ['RATES']
+    for guess in initial_guesses:
+        game.guess(guess)
 
     while not game.is_over:
         e_map = compute_entropy(game.possible_answers)
@@ -551,6 +563,7 @@ def bot_play(
 
 def test_bot(
     k: Optional[int] = None,
+    initial_guesses: Optional[list[str]] = None,
     verbose: bool = False,
 ):
     scores = []
@@ -562,7 +575,11 @@ def test_bot(
 
     start = time.time()
     for i, word in enumerate(word_list):
-        score = bot_play(word, verbose=verbose)
+        score = bot_play(
+            word,
+            initial_guesses=initial_guesses,
+            verbose=verbose,
+        )
         if not verbose:
             print(
                 f'\rTesting bot: {i + 1}/{len(word_list)} [{round(100 * (i + 1) / len(word_list))}%]',
@@ -579,6 +596,9 @@ def test_bot(
         log.error("Failed to win the following games:")
         for failure in failed:
             log.error(f"    {failure}")
+            log.error(
+                f"Total failed: {len(failed)} ({round(100 * len(failed) / len(word_list), 2)} success)"
+            )
     log.newline()
     log.info(f"Time elapsed: {round(time.time() - start, 2)}s")
     log.info(f"Average score: {round(sum(scores) / len(scores), 2)}")
