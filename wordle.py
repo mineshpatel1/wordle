@@ -32,13 +32,12 @@ class GuessState(Enum):
 
     @staticmethod
     def from_basic(basic_id: str) -> GuessState:
-        match basic_id:
-            case '.':
-                return GuessState.WRONG
-            case 'P':
-                return GuessState.POSITION
-            case 'C':
-                return GuessState.CORRECT
+        convert = {
+            '.': GuessState.WRONG,
+            'P': GuessState.POSITION,
+            'C': GuessState.CORRECT,
+        }
+        return convert[basic_id]
 
 
 class Word:
@@ -235,18 +234,12 @@ class Game:
         wrong_position: set[Letter],
         not_in_word: set[str],
     ) -> list[Word]:
-        possible_words = []
-        answer_has_letter = {str(c) for c in correct}.union({str(c) for c in wrong_position})
-        for word in self.word_list:
-            if (
-                all(c.guess == word.word[c.position] for c in correct) and
-                all(p.guess in word.word for p in wrong_position) and
-                all(p.guess != word.word[p.position] for p in wrong_position) and
-                # For incorrect letters, need to make sure multiple occurrences are catered for
-                all(n not in word.word for n in not_in_word if n not in answer_has_letter)
-            ):
-                possible_words.append(word)
-        return possible_words
+        return filter_words_from_info(
+            correct,
+            wrong_position,
+            not_in_word,
+            self.word_list,
+        )
 
     def guess(self, _guess: str) -> bool:
         if self.is_over:
@@ -333,6 +326,27 @@ def _guess_mask(word: str, answer: str):
     return guess
 
 
+def filter_words_from_info(
+    correct: set[Letter],
+    wrong_position: set[Letter],
+    not_in_word: set[str],
+    word_list: Optional[list[Word]] = None,
+) -> list[Word]:
+    word_list = word_list or load_words()
+    possible_words = []
+    answer_has_letter = {str(c) for c in correct}.union({str(c) for c in wrong_position})
+    for word in word_list:
+        if (
+            all(c.guess == word.word[c.position] for c in correct) and
+            all(p.guess in word.word for p in wrong_position) and
+            all(p.guess != word.word[p.position] for p in wrong_position) and
+            # For incorrect letters, need to make sure multiple occurrences are catered for
+            all(n not in word.word for n in not_in_word if n not in answer_has_letter)
+        ):
+            possible_words.append(word)
+    return possible_words
+
+
 def load_words(file_path: str = WORD_LIST) -> list[Word]:
     word_list = []
     with open(file_path, 'r') as f:
@@ -341,12 +355,12 @@ def load_words(file_path: str = WORD_LIST) -> list[Word]:
     return word_list
 
 
-def load_word_db(file_path: str = WORD_DB) -> WordDb:
+def load_guess_db(file_path: str = WORD_DB) -> WordDb:
     with open(file_path, 'r') as f:
         return json.load(f)
 
 
-def save_word_db(word_db: WordDb, file_path: str = WORD_DB):
+def save_guess_db(word_db: WordDb, file_path: str = WORD_DB):
     # current_db = load_word_db(file_path)
     # current_db.update(word_db)
     with open(file_path, 'w') as f:
@@ -438,7 +452,43 @@ def compute_guess_db(
     )
 
     db = merge_guess_maps(probs, info)
-    save_word_db(db)
+    save_guess_db(db)
+
+
+def crude_opening_pairs():
+    db = load_guess_db()
+    all_words = []
+    for word in db:
+        sum_pi = 0
+        for guess, pi in db[word].items():
+            sum_pi += pi['p'] * pi['I']
+        all_words.append({
+            'word': word,
+            'sum_pi': sum_pi,
+        })
+    all_words = sorted(all_words, key=lambda item: -item['sum_pi'])
+
+    exclusive = {}
+    i, total = 0, len(all_words) ** 2
+    for x in all_words:
+        for y in all_words:
+            i += 1
+            progress = i / total
+            print(
+                f'\rProcessing: [{round(100 * progress)}%]',
+                end="",
+            )
+
+            a = set(char for char in x['word'])
+            b = set(char for char in y['word'])
+            if len(a.intersection(b)) == 0:
+                key = '|'.join(sorted([x['word'], y['word']]))
+                exclusive[key] = (key, x['sum_pi'] + y['sum_pi'])
+    print()
+    exclusive = sorted(exclusive.values(), key=lambda item: -item[1])
+
+    for w in exclusive[:100]:
+        log.info(w)
 
 
 def main():
