@@ -1,0 +1,39 @@
+{
+    "ROLES, PAINT": {
+        "score": 3.66,
+        "failed": [
+            "HATCH",
+            "TAUNT",
+            "IONIC",
+            "CROOK",
+            "JOLLY",
+            "JOKER",
+            "GROWN",
+            "DROOL",
+            "SKULL",
+            "ORDER",
+            "TASTE",
+            "PURER",
+            "WOUND",
+            "VAUNT",
+            "WILLY"
+        ]
+    },
+    "CRANE, PIOUS": {
+        "score": 3.78,
+        "failed": [
+            "CHEEK",
+            "TAUNT",
+            "CROOK",
+            "JOKER",
+            "MAMMY",
+            "SKULL",
+            "GAZER",
+            "WITTY",
+            "WOUND",
+            "MILKY",
+            "VAUNT",
+            "SHAVE"
+        ]
+    }
+}

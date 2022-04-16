@@ -8,7 +8,7 @@ import random
 import time
 from random import randrange
 from enum import Enum
-from utils import log, multi_process
+from utils import log, multi_process, print_progress
 from typing import Optional, Union
 
 GuessMap = dict[str, float]
@@ -24,6 +24,8 @@ WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
 ANSWER_LIST = os.path.join(WORD_LIST_DIR, 'answers.txt')
 GUESS_DB = os.path.join(WORD_LIST_DIR, 'uk_guess_db.json')
 WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_word_db.json')
+SCORE_ANSWERS_DB = os.path.join(WORD_LIST_DIR, 'scores-answers.json')
+SCORE_OVERALL_DB = os.path.join(WORD_LIST_DIR, 'scores-overall.json')
 
 NUM_PROCESSES = 5
 
@@ -51,10 +53,12 @@ class Word:
     def __init__(
         self,
         word: str,
-        entropy: Optional[float] = None,
+        entropy: float = 0,
+        entropy_2: float = 0,
     ):
         self.word = word
         self.entropy = entropy
+        self.entropy_2 = entropy_2
 
     @property
     def word(self):
@@ -142,7 +146,8 @@ class Letter:
         position: int,
         state: GuessState,
     ):
-        assert len(letter) == 1, "guess and answer must be single letters."
+        assert len(letter) == 1, "Input guess and answer must be single letters."
+        assert position < WORD_SIZE, f"Input position ({position}) must be less than {WORD_SIZE}"
         self.guess = letter.upper()
         self.position = position
         self.state = state
@@ -249,9 +254,7 @@ class Game:
     @property
     def best_move(self) -> Word:
         if not self._best_move:
-            e_map = compute_entropy(self.possible_answers)
-            best_words = sort_by_entropy(e_map)
-            self._best_move = best_words[0]
+            self._best_move = get_best_move(self.possible_answers)
         return self._best_move
 
     def filter_words_from_info(
@@ -353,6 +356,12 @@ def _guess_mask(word: str, answer: str):
     return guess
 
 
+def get_best_move(word_list: list[Word]) -> Word:
+    e_map = compute_entropy(word_list)
+    best_words = sort_by_entropy(e_map)
+    return best_words[0]
+
+
 def filter_words_from_info(
     correct: set[Letter],
     wrong_position: set[Letter],
@@ -392,13 +401,16 @@ def save_guess_db(
     file_path: str = GUESS_DB,
 ):
     with open(file_path, 'w') as f:
-        json.dump(word_db, f)
+        json.dump(word_db, f, indent=4)
 
 
 def load_word_db(file_path: str = WORD_DB) -> dict[str, Word]:
     with open(file_path, 'r') as f:
         word_db = json.load(f)
-    return {w: Word(w, data['H0']) for w, data in word_db.items()}
+    return {
+        w: Word(w, data.get('H0', 0), data.get('H1', 0))
+        for w, data in word_db.items()
+    }
 
 
 def save_word_db(
@@ -439,6 +451,7 @@ def play_game():
 def get_many_probabilities(
     possible_words: list[Word],
     verbose: bool = False,
+    num_processes: int = 2,
 ) -> WordGuessMap:
     input_list = [(w, possible_words) for w in possible_words]
     return multi_process(
@@ -446,12 +459,14 @@ def get_many_probabilities(
         Word.get_probability_map,
         zip_with=lambda word, _word_list: str(word),
         verbose=verbose,
+        num_processes=num_processes,
     )
 
 
 def get_many_info_values(
     possible_words: list[Word],
     verbose: bool = False,
+    num_processes: int = 2,
 ) -> WordGuessMap:
     input_list = [(w, possible_words) for w in possible_words]
     return multi_process(
@@ -459,6 +474,7 @@ def get_many_info_values(
         Word.get_information_map,
         zip_with=lambda word, _word_list: str(word),
         verbose=verbose,
+        num_processes=num_processes,
     )
 
 
@@ -479,24 +495,34 @@ def merge_guess_maps(
     return db
 
 
-def compute_entropy(
-    possible_words: list[Word],
+def calculate_entropy(
+    pi_map: dict[str, dict[str, dict[str, float]]],
 ) -> dict[str, dict[str, float]]:
-    probs = get_many_probabilities(possible_words)
-    info = get_many_info_values(possible_words)
-
-    db = merge_guess_maps(probs, info)
-    save_guess_db(db)
-    
     entropy_map = {}
-    for word in db:
+    for word in pi_map:
         entropy = 0
-        for guess, pi in db[word].items():
+        for guess, pi in pi_map[word].items():
             entropy += pi['p'] * pi['I']
         entropy_map[str(word)] = {
             'H': entropy,
         }
     return entropy_map
+
+
+def compute_entropy(
+    possible_words: list[Word],
+    save: bool = False,
+    verbose: bool = False,
+    num_processes: int = 2,
+) -> dict[str, dict[str, float]]:
+    probs = get_many_probabilities(possible_words, verbose, num_processes=num_processes)
+    info = get_many_info_values(possible_words, verbose, num_processes=num_processes)
+
+    pi_map = merge_guess_maps(probs, info)
+    if save:
+        save_guess_db(pi_map)
+
+    return calculate_entropy(pi_map)
 
 
 def sort_by_entropy(entropy_map: WordDb) -> list[Word]:
@@ -505,18 +531,7 @@ def sort_by_entropy(entropy_map: WordDb) -> list[Word]:
 
 
 def crude_opening_pairs():
-    db = load_guess_db()
-    all_words = []
-    for word in db:
-        sum_pi = 0
-        for guess, pi in db[word].items():
-            sum_pi += pi['p'] * pi['I']
-        all_words.append({
-            'word': word,
-            'sum_pi': sum_pi,
-        })
-    all_words = sorted(all_words, key=lambda item: -item['sum_pi'])
-
+    all_words = load_word_db().values()
     exclusive = {}
     i, total = 0, len(all_words) ** 2
     for x in all_words:
@@ -528,11 +543,11 @@ def crude_opening_pairs():
                 end="",
             )
 
-            a = set(char for char in x['word'])
-            b = set(char for char in y['word'])
+            a = set(char for char in str(x))
+            b = set(char for char in str(y))
             if len(a.intersection(b)) == 0:
-                key = '|'.join(sorted([x['word'], y['word']]))
-                exclusive[key] = (key, x['sum_pi'] + y['sum_pi'])
+                key = '|'.join(sorted([str(x), str(y)]))
+                exclusive[key] = (key, x.entropy + y.entropy)
     print()
     exclusive = sorted(exclusive.values(), key=lambda item: -item[1])
 
@@ -543,15 +558,21 @@ def crude_opening_pairs():
 def bot_play(
     word: Union[str, Word],
     initial_guesses: Optional[list[str]] = None,
+    filter_answers: Optional[list[Word]] = None,
     verbose: bool = True,
+    num_processes: int = 2,
 ) -> int:
     game = Game(word)
-    initial_guesses = initial_guesses or ['RATES']
+    initial_guesses = initial_guesses or ['ROLES', 'PAINT']
     for guess in initial_guesses:
         game.guess(guess)
 
     while not game.is_over:
-        e_map = compute_entropy(game.possible_answers)
+        if filter_answers:
+            possible = [w for w in game.possible_answers if w in filter_answers]
+        else:
+            possible = game.possible_answers
+        e_map = compute_entropy(possible, num_processes=num_processes)
         best_words = sort_by_entropy(e_map)
         game.guess(best_words[0])
 
@@ -562,9 +583,11 @@ def bot_play(
 
 
 def test_bot(
+    initial_guesses: list[str],
+    filter_answers: Optional[list[Word]],
     k: Optional[int] = None,
-    initial_guesses: Optional[list[str]] = None,
     verbose: bool = False,
+    num_processes: int = 2,
 ):
     scores = []
     failed = []
@@ -579,6 +602,8 @@ def test_bot(
             word,
             initial_guesses=initial_guesses,
             verbose=verbose,
+            num_processes=num_processes,
+            filter_answers=filter_answers,
         )
         if not verbose:
             print(
@@ -596,16 +621,145 @@ def test_bot(
         log.error("Failed to win the following games:")
         for failure in failed:
             log.error(f"    {failure}")
-            log.error(
-                f"Total failed: {len(failed)} ({round(100 * len(failed) / len(word_list), 2)} success)"
-            )
+        log.error(
+            f"Total failed: {len(failed)} ({round(100 * 1-(len(failed) / len(word_list)), 2)} success)"
+        )
     log.newline()
+    avg_score = round(sum(scores) / len(scores), 2)
     log.info(f"Time elapsed: {round(time.time() - start, 2)}s")
-    log.info(f"Average score: {round(sum(scores) / len(scores), 2)}")
+    log.info(f"Average score: {avg_score}")
+
+    if not k:
+        score_db = SCORE_ANSWERS_DB if filter_answers else SCORE_OVERALL_DB
+        with open(score_db, 'r') as f:
+            db = json.load(f)
+
+        value = {
+            ', '.join(initial_guesses): {
+                "score": avg_score,
+                "failed": [str(w) for w in failed],
+            }
+        }
+        db.update(value)
+
+        with open(score_db, 'w') as f:
+            json.dump(db, f, indent=4)
+
+
+def deep_probability_map(
+    word: Word,
+    possible_words: Optional[list[Word]] = None,
+) -> dict[str, float]:
+
+    possible_words = possible_words or load_words()
+    histogram = {}
+    total = 0
+    for i, answer in enumerate(possible_words):
+        if i % 500 == 0:
+            log.info(
+                f'\rCalculating Probability Map for {word}: '
+                f'[{round(100 * (i / len(possible_words)))}%]',
+            )
+
+        game = Game(answer)
+        game.guess(word)
+        first_guess = game.guesses[0].basic_str
+
+        for second in game.possible_answers:
+            if second != word:
+                second_guess = _guess_mask(second.word, answer.word)
+                key = f"{first_guess}|{second_guess}"
+                histogram[key] = histogram.get(key, 0)
+                histogram[key] += 1
+                total += 1
+
+    return {
+        guess: num / total
+        for guess, num in histogram.items()
+    }
+
+
+def deep_information_map(
+    word: Word,
+    possible_words: Optional[list[Word]] = None,
+) -> dict[str, float]:
+    possible_words = possible_words or load_words()
+    info_map = {}
+
+    for i, answer in enumerate(possible_words):
+        if i % 500 == 0:
+            log.info(
+                f'\rCalculating Info Map for {word}: '
+                f'[{round(100 * (i / len(possible_words)))}%]',
+            )
+
+        game = Game(answer)
+        game.guess(word)
+        first_guess = game.guesses[0].basic_str
+
+        for second in game.possible_answers:
+            if second != word:
+                second_guess = _guess_mask(second.word, answer.word)
+                key = f"{first_guess}|{second_guess}"
+
+                if key not in info_map:
+                    game.guess(second)
+                    info_map[key] = game.information_value
+    return info_map
+
+
+def compute_deep_entropy(
+    input_words: list[Word],
+    possible_words: Optional[list[Word]] = None,
+    num_processes: int = 2,
+) -> dict[str, dict[str, float]]:
+    possible_words = possible_words or load_words()
+    input_list = [(w, possible_words) for w in input_words]
+
+    output = {}
+    for key, function in [
+        ('prob', deep_probability_map),
+        ('info', deep_information_map),
+    ]:
+        output[key] = multi_process(
+            input_list,
+            function,
+            zip_with=lambda word, _word_list: str(word),
+            verbose=False,
+            num_processes=num_processes,
+        )
+
+    pi_map = merge_guess_maps(output['prob'], output['info'])
+    return calculate_entropy(pi_map)
+
+
+def _two_guess_iv(word: Word, initial_guesses: list[Word]) -> float:
+    game = Game(word)
+    for guess in initial_guesses:
+        game.guess(guess)
+        if game.is_over:
+            break
+    return game.information_value
+
+
+def compute_avg_iv(
+    initial_guesses: list[str],
+    num_processes: int = 2,
+) -> float:
+    all_words = load_words()
+    output = multi_process(
+        [(w, initial_guesses) for w in all_words],
+        _two_guess_iv,
+        num_processes=num_processes,
+    )
+    total_iv = sum(output)
+    avg_iv = total_iv / len(all_words)
+    log.info(f"Avg IV for {', '.join(initial_guesses)}: {round(avg_iv, 2)}")
+    return avg_iv
 
 
 def main():
-    play_game()
+    pass
 
 
 if __name__ == '__main__':
