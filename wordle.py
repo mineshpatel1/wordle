@@ -5,10 +5,11 @@ import os
 import json
 import math
 import random
+import requests
 import time
 from random import randrange
 from enum import Enum
-from utils import log, multi_process
+from utils import log, chunks, multi_process, batch
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 GuessMap = Dict[str, float]
@@ -55,10 +56,12 @@ class Word:
         word: str,
         entropy: float = 0,
         entropy_2: float = 0,
+        ngram_prob: float = 0,
     ):
         self.word = word
         self.entropy = entropy
         self.entropy_2 = entropy_2
+        self.ngram_prob = ngram_prob
 
     @property
     def word(self):
@@ -88,7 +91,12 @@ class Word:
 
     @property
     def json(self) -> Dict[str, float]:
-        return {'H': self.entropy}
+        out = {'H0': self.entropy}
+        if self.entropy_2:
+            out['H1'] = self.entropy_2
+        if self.ngram_prob:
+            out['p_n'] = self.ngram_prob
+        return out
 
     def get_probability_map(
         self,
@@ -442,7 +450,7 @@ def load_word_db(file_path: str = WORD_DB) -> Dict[str, Word]:
     with open(file_path, 'r') as f:
         word_db = json.load(f)
     return {
-        w: Word(w, data.get('H0', 0), data.get('H1', 0))
+        w: Word(w, data.get('H0'), data.get('H1'), data.get('p_n'))
         for w, data in word_db.items()
     }
 
@@ -455,7 +463,7 @@ def save_word_db(
         word_db = {w.word: w.json for w in word_db}
 
     with open(file_path, 'w') as f:
-        json.dump(word_db, f)
+        json.dump(word_db, f, indent=4)
 
 
 def sanitise_word_list(file_path: str = WORD_LIST):
@@ -792,6 +800,24 @@ def compute_avg_iv(
     avg_iv = total_iv / len(all_words)
     log.info(f"Avg IV for {', '.join(initial_guesses)}: {round(avg_iv, 2)}")
     return avg_iv
+
+
+def get_ngram_ratio(words: List[str]) -> Dict[str, float]:
+    url = f'https://books.google.com/ngrams/json?content={",".join(words)}' \
+          f'&year_start=2018&year_end=2019&corpus=26&smoothing=0'
+    res = requests.get(url)
+    out = {}
+    for item in res.json():
+        out[item['ngram']] = item['timeseries'][1]
+    return out
+
+
+@batch
+def batch_fetch_ngrams(words):
+    ngram = get_ngram_ratio([str(w) for w in words])
+    for w in words:
+        w.ngram_prob = ngram[str(w)]
+    return words
 
 
 def main():

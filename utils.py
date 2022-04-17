@@ -2,7 +2,11 @@ import multiprocessing
 import time
 import types
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+import queue
+import threading
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
+
+TAB = ' ' * 4
 
 
 class ShellColor(object):
@@ -135,6 +139,98 @@ def create_logger(name: str, log_file: Optional[str] = None):
     return logger
 
 
+def _batch_wrap(
+        function: Callable,
+        input_list: List[Union[List[Any], Tuple[Any], Dict[str, Any]]],
+        num_threads: int,
+        zip_output: Optional[Callable],
+        raise_exception: bool,
+        class_ref: Optional[type] = None,
+        track_progress: Optional[str] = None,
+) -> Optional[Union[Dict[Any, Any], List[Any]]]:
+    if len(input_list) == 0:  # Nothing to do
+        return
+
+    if num_threads > len(input_list):  # Don't need that many threads
+        num_threads = len(input_list)
+
+    def _print_progress(_output: Dict[int, Any]):
+        # print('This is happening?', end="2")
+        if track_progress:
+            name = track_progress if isinstance(track_progress, str) else function.__name__
+            print(
+                f'{TAB}Processing: {name} '
+                f'[{round(100 * (len(_output) / len(input_list)))}%]\r',
+                end="",
+            )
+            print('')
+
+    def _apply(_func: Callable, _item: Any):
+        # If the argument is not iterable, put it in a tuple
+        _item = _item if isinstance(_item, (list, tuple, dict)) else (_item,)
+
+        if class_ref:  # Need to pass self as the first argument for methods
+            if isinstance(_item, dict):
+                return _func(class_ref, **_item)  # Kwargs
+            else:
+                return _func(class_ref, *_item)  # Args
+        else:  # Pass args or kwargs
+            if isinstance(_item, dict):
+                return _func(**_item)  # Kwargs
+            else:
+                return _func(*_item)  # Args
+
+    def _worker(_queue: queue.Queue, _output: Dict[int, Any]):
+        while True:
+            w_item, index = _queue.get()
+            try:
+                _output[index] = _apply(function, w_item)
+            except Exception as err:
+                log.error('Error: {}'.format(err))
+                if raise_exception:
+                    raise err
+                _output[index] = None
+            finally:
+                _print_progress(_output)
+                _queue.task_done()
+
+    output = {}
+    q = queue.Queue()
+
+    for _i in range(num_threads):
+        t = threading.Thread(target=_worker, args=(q, output))
+        t.daemon = True
+        t.start()
+
+    _print_progress(output)
+
+    for i, item in enumerate(input_list):
+        q.put((item, i))
+
+    q.join()  # Wait for all operations to complete
+
+    output = [output[k] for k in sorted(output.keys())]  # Sort output by key
+
+    if zip_output:
+        output = dict(zip([_apply(zip_output, item) for item in input_list], output))
+    return output
+
+
+def batch(function: Callable):
+    def batch_wrap(
+            input_list: List[Union[List[Any], Tuple[Any], Dict[str, Any]]],
+            num_threads: int = 25,
+            zip_output: Optional[Callable] = None,
+            raise_exception: bool = False,
+            track_progress: Optional[str] = None,
+    ):
+        return _batch_wrap(
+            function, input_list, num_threads, zip_output, raise_exception, None, track_progress,
+        )
+
+    return batch_wrap
+
+
 def print_progress(
     name: str,
     progress: float,
@@ -146,7 +242,7 @@ def print_progress(
 
 
 def worker(
-    queue: multiprocessing.Queue,
+    worker_queue: multiprocessing.Queue,
     func: Callable,
     output: Dict[int, Any],
     num_jobs: int,
@@ -156,7 +252,7 @@ def worker(
     Multiprocessing worker. Needs to be top level because it relies on being pickled.
     """
     while True:
-        args, index = queue.get(block=True)
+        args, index = worker_queue.get(block=True)
 
         if index == -1:  # Signal for ending the process
             break
@@ -220,6 +316,12 @@ def multi_process(
             output,
         ))
     return output
+
+
+def chunks(_list: List[Any], n: int) -> Generator[List[Any], None, None]:
+    """Yield successive n-sized chunks from a list."""
+    for i in range(0, len(_list), n):
+        yield _list[i:i + n]
 
 
 log = create_logger('Wordle')
