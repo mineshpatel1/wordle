@@ -325,17 +325,10 @@ class WordleWebDriver:
         "correct": GuessState.CORRECT,
     }
 
-    def __init__(
-        self,
-        filter_answers: bool = True,
-        initial_guesses: Optional[List[str]] = None,
-    ):
+    def __init__(self):
         opts = webdriver.ChromeOptions()
         opts.add_argument("--incognito")
         self.driver: WebDriver = webdriver.Chrome(options=opts)
-        self.filter_answers = filter_answers
-        self.initial_guesses = initial_guesses or INITIAL_GUESSES
-        self.possible_words = load_words(ANSWER_LIST) if filter_answers else load_words()
         self.num_processes = NUM_PROCESSES
         self.guesses = []
 
@@ -413,36 +406,45 @@ class WordleWebDriver:
             self.type_key("←")
             time.sleep(delay)
 
-    def play(self):
+    def play(
+        self,
+        filter_answers: bool = True,
+        initial_guesses: Optional[List[str]] = None,
+    ):
+        log.info('Initialising...')
+        filter_answers = filter_answers
+        possible_words = load_words(ANSWER_LIST) if filter_answers else load_words()
+        initial_guesses = initial_guesses or INITIAL_GUESSES
         self.open_site()
         time.sleep(2)
 
-        for guess in self.initial_guesses:
+        for guess in initial_guesses:
             self.enter_word(guess.lower())
+            time.sleep(2)
 
         while len(self.guesses) < NUM_GUESSES and not self.has_won():
             info = _get_information_from_guesses(self.guesses)
-            self.possible_words = filter_words_from_info(*info, self.possible_words)  # noqa
+            possible_words = filter_words_from_info(*info, possible_words)  # noqa
             word = get_best_move(
-                self.possible_words,
+                possible_words,
                 num_processes=self.num_processes,
                 must_answer=len(self.guesses) == NUM_GUESSES - 1,  # Last Go
                 deep=False,
             )
-            log.info(f"Best move: {word} {self.has_won()}")
+            log.info(f"Best move: {word}")
             allowed = self.enter_word(str(word).lower())
 
             # Initiate retry
             if not allowed:
                 time.sleep(1)
-                idx = self.possible_words.index(word)
-                del self.possible_words[idx]
+                idx = possible_words.index(word)
+                del possible_words[idx]
                 self.clear_word(str(word))
                 time.sleep(1)
             else:
-                time.sleep(3)
+                time.sleep(2)
 
-        log.info("Game Over.")
+        log.info(f"Game Over: {'Won' if self.has_won() else 'Lost'}")
         time.sleep(3)
         self.driver.close()
 
