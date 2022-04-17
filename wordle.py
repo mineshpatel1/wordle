@@ -28,7 +28,6 @@ BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
 ANSWER_LIST = os.path.join(WORD_LIST_DIR, 'answers.txt')
-GUESS_DB = os.path.join(WORD_LIST_DIR, 'uk_guess_db.json')
 WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_word_db.json')
 SCORE_ANSWERS_DB = os.path.join(WORD_LIST_DIR, 'scores-answers.json')
 SCORE_OVERALL_DB = os.path.join(WORD_LIST_DIR, 'scores-overall.json')
@@ -584,19 +583,6 @@ def load_words(file_path: str = WORD_LIST) -> List[Word]:
     return word_list
 
 
-def load_guess_db(file_path: str = GUESS_DB) -> GuessDb:
-    with open(file_path, 'r') as f:
-        return json.load(f)
-
-
-def save_guess_db(
-    word_db: GuessDb,
-    file_path: str = GUESS_DB,
-):
-    with open(file_path, 'w') as f:
-        json.dump(word_db, f, indent=4)
-
-
 def load_word_db(file_path: str = WORD_DB) -> Dict[str, Word]:
     with open(file_path, 'r') as f:
         word_db = json.load(f)
@@ -641,40 +627,6 @@ def play_game():
     print(f"Answer: {game.answer}")
 
 
-def get_many_probabilities(
-    possible_words: List[Word],
-    input_words: Optional[List[Word]] = None,
-    verbose: bool = False,
-    num_processes: int = 2,
-) -> WordGuessMap:
-    input_words = input_words or possible_words
-    input_list = [(w, possible_words) for w in input_words]
-    return multi_process(
-        input_list,
-        Word.get_probability_map,
-        zip_with=lambda word, _word_list: str(word),
-        verbose=verbose,
-        num_processes=num_processes,
-    )
-
-
-def get_many_info_values(
-    possible_words: List[Word],
-    input_words: Optional[List[Word]] = None,
-    verbose: bool = False,
-    num_processes: int = 2,
-) -> WordGuessMap:
-    input_words = input_words or possible_words
-    input_list = [(w, possible_words) for w in input_words]
-    return multi_process(
-        input_list,
-        Word.get_information_map,
-        zip_with=lambda word, _word_list: str(word),
-        verbose=verbose,
-        num_processes=num_processes,
-    )
-
-
 def merge_guess_maps(
     prob_map: WordGuessMap,
     info_map: WordGuessMap,
@@ -709,18 +661,46 @@ def calculate_entropy(
 def compute_entropy(
     possible_words: List[Word],
     input_list: Optional[List[Word]] = None,
-    save: bool = False,
     verbose: bool = False,
     num_processes: int = 2,
 ) -> Dict[str, Dict[str, float]]:
+    def _get_many_probabilities(
+        _possible_words: List[Word],
+        _input_words: Optional[List[Word]] = None,
+        _verbose: bool = False,
+        _num_processes: int = 2,
+    ) -> WordGuessMap:
+        _input_words = _input_words or _possible_words
+        _input_list = [(w, _possible_words) for w in _input_words]
+        return multi_process(
+            _input_list,
+            Word.get_probability_map,
+            zip_with=lambda word, _word_list: str(word),
+            verbose=_verbose,
+            num_processes=_num_processes,
+        )
+
+    def _get_many_info_values(
+        _possible_words: List[Word],
+        _input_words: Optional[List[Word]] = None,
+        _verbose: bool = False,
+        _num_processes: int = 2,
+    ) -> WordGuessMap:
+        _input_words = _input_words or _possible_words
+        _input_list = [(w, _possible_words) for w in _input_words]
+        return multi_process(
+            _input_list,
+            Word.get_information_map,
+            zip_with=lambda word, _word_list: str(word),
+            verbose=_verbose,
+            num_processes=_num_processes,
+        )
+
     input_list = input_list or possible_words
-    probs = get_many_probabilities(possible_words, input_list, verbose, num_processes)
-    info = get_many_info_values(possible_words, input_list, verbose, num_processes)
+    probs = _get_many_probabilities(possible_words, input_list, verbose, num_processes)
+    info = _get_many_info_values(possible_words, input_list, verbose, num_processes)
 
     pi_map = merge_guess_maps(probs, info)
-    if save:
-        save_guess_db(pi_map)
-
     return calculate_entropy(pi_map)
 
 
