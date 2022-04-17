@@ -19,6 +19,7 @@ WordDb = Dict[str, Dict[str, float]]
 
 WORD_SIZE = 5
 NUM_GUESSES = 6
+NGRAM_PROB_THRESHOLD = 4.3809397082261724e-11
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
@@ -450,7 +451,7 @@ def load_word_db(file_path: str = WORD_DB) -> Dict[str, Word]:
     with open(file_path, 'r') as f:
         word_db = json.load(f)
     return {
-        w: Word(w, data.get('H0'), data.get('H1'), data.get('p_n'))
+        w: Word(w, data.get('H0', 0), data.get('H1', 0), data.get('p_n', 0))
         for w, data in word_db.items()
     }
 
