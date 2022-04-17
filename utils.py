@@ -2,7 +2,7 @@ import multiprocessing
 import time
 import types
 import logging
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 class ShellColor(object):
@@ -148,7 +148,7 @@ def print_progress(
 def worker(
     queue: multiprocessing.Queue,
     func: Callable,
-    output: dict[int, Any],
+    output: Dict[int, Any],
     num_jobs: int,
     verbose: bool = True,
 ):
@@ -171,12 +171,12 @@ def worker(
 
 
 def multi_process(
-    input_list: list[tuple[Any, ...]],
+    input_list: List[Tuple[Any, ...]],
     func: Callable,
     num_processes: int = 2,
     zip_with: Optional[Callable] = None,
     verbose: bool = True,
-) -> Union[list[Any], dict[Any, Any]]:
+) -> Union[List[Any], Dict[Any, Any]]:
     main_queue = multiprocessing.Queue()
     manager = multiprocessing.Manager()
     output = manager.dict()

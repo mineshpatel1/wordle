@@ -60,6 +60,7 @@ class Words(unittest.TestCase):
                 {Letter('C', 0, GuessState.CORRECT)},
                 {Letter('E', 4, GuessState.POSITION)},
                 {'A', 'R', 'N'},
+                {},
             )
         )
         self.assertEqual(len(game.possible_answers), 46)
@@ -74,7 +75,7 @@ class Words(unittest.TestCase):
             Letter('O', 2, GuessState.POSITION),
         }
         not_in_word = {'C', 'R', 'I', 'U', 'S'}
-        possible = Game('chest').filter_words_from_info(correct, in_word, not_in_word)
+        possible = Game('chest').filter_words_from_info(correct, in_word, not_in_word, {})
         self.assertEqual(
             [w.word for w in possible],
             ['BEBOP', 'DEPOT', 'DOPED', 'DOPEY', 'HOPED', 'LOPED', 'MOPED', 'OPTED', 'TEMPO', 'TOPED'],
@@ -91,6 +92,10 @@ class Words(unittest.TestCase):
         game = Game('koran')
         game.guess('aaron')
         self.assertEqual(len(game.possible_answers), 2)
+
+        game = Game('watch')
+        game.guess('hatch')
+        self.assertEqual(len(game.possible_answers), 6)
 
     def test_probability(self):
         game = Game('chest')

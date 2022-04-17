@@ -35,5 +35,79 @@
             "VAUNT",
             "SHAVE"
         ]
+    },
+    "LOANS, TIRED": {
+        "score": 3.69,
+        "failed": [
+            "POUND",
+            "HATCH",
+            "FOYER",
+            "IONIC",
+            "PASTE",
+            "MAMMY",
+            "DROOL",
+            "SKULL",
+            "RIPER",
+            "ORDER",
+            "PURER",
+            "WOUND"
+        ]
+    },
+    "TONES": {
+        "score": 3.58,
+        "failed": [
+            "POUND",
+            "HATCH",
+            "WATCH",
+            "WASTE",
+            "CATCH",
+            "GRAZE",
+            "SKULL",
+            "HUNCH",
+            "ORDER",
+            "WOUND",
+            "ROGER",
+            "SHAVE"
+        ]
+    },
+    "RATES": {
+        "score": 3.58,
+        "failed": [
+            "POUND",
+            "HATCH",
+            "WATCH",
+            "FOYER",
+            "TAUNT",
+            "CROOK",
+            "NOBLY",
+            "ORDER",
+            "TASTE",
+            "WOUND",
+            "CORER",
+            "STASH",
+            "VAUNT",
+            "SHAVE"
+        ]
+    },
+    "HIRES": {
+        "score": 3.62,
+        "failed": [
+            "WATCH",
+            "FOYER",
+            "POKER",
+            "GULLY",
+            "IONIC",
+            "CATCH",
+            "CROOK",
+            "STILT",
+            "BOXER",
+            "SKULL",
+            "RIPER",
+            "ORDER",
+            "TASTE",
+            "KRILL",
+            "WOUND",
+            "SHAVE"
+        ]
     }
 }

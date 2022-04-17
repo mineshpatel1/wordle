@@ -8,13 +8,13 @@ import random
 import time
 from random import randrange
 from enum import Enum
-from utils import log, multi_process, print_progress
-from typing import Optional, Union
+from utils import log, multi_process
+from typing import Dict, List, Optional, Set, Tuple, Union
 
-GuessMap = dict[str, float]
-WordGuessMap = dict[str, GuessMap]
-GuessDb = dict[str, WordGuessMap]
-WordDb = dict[str, dict[str, float]]
+GuessMap = Dict[str, float]
+WordGuessMap = Dict[str, GuessMap]
+GuessDb = Dict[str, WordGuessMap]
+WordDb = Dict[str, Dict[str, float]]
 
 WORD_SIZE = 5
 NUM_GUESSES = 6
@@ -75,7 +75,7 @@ class Word:
         return len(set(self.word)) == len(self.word)
 
     @property
-    def letter_map(self) -> dict[str, int]:
+    def letter_map(self) -> Dict[str, int]:
         out = {}
         for char in self.word:
             out[char] = out.get(char, 0)
@@ -83,17 +83,17 @@ class Word:
         return out
 
     @property
-    def repeated_letters(self) -> list[str]:
+    def repeated_letters(self) -> List[str]:
         return [k for k, v in self.letter_map.items() if v > 1]
 
     @property
-    def json(self) -> dict[str, float]:
+    def json(self) -> Dict[str, float]:
         return {'H': self.entropy}
 
     def get_probability_map(
         self,
-        possible_words: list[Word],
-    ) -> dict[str, float]:
+        possible_words: List[Word],
+    ) -> Dict[str, float]:
         """
         Returns:
             dict of guess pattern keys and probability of occurrence in the word list.
@@ -109,8 +109,8 @@ class Word:
 
     def get_information_map(
         self,
-        possible_words: list[Word],
-    ) -> dict[str, float]:
+        possible_words: List[Word],
+    ) -> Dict[str, float]:
         """
         Returns:
             dict of guess pattern keys and the information value for the first guess.
@@ -184,13 +184,13 @@ class Game:
     def __init__(
         self,
         answer: Union[str, Word],
-        word_list: Optional[list[Word]] = None
+        word_list: Optional[List[Word]] = None
     ):
         self.answer: Word = Word(answer) if isinstance(answer, str) else answer
         self.num_guesses: int = NUM_GUESSES
         self.turn: int = 0
-        self.guesses: list[Guess] = []
-        self.word_list: list[Word] = word_list or load_words()
+        self.guesses: List[Guess] = []
+        self.word_list: List[Word] = word_list or load_words()
         self._best_move: Optional[Word] = None
 
     @property
@@ -215,7 +215,7 @@ class Game:
         return self.guesses[-1]
 
     @property
-    def possible_answers(self) -> list[Word]:
+    def possible_answers(self) -> List[Word]:
         return self.filter_words_from_info(*self.information)
 
     @property
@@ -228,7 +228,7 @@ class Game:
         return -1 * math.log(len(self.possible_answers) / len(self.word_list))
 
     @property
-    def information(self) -> tuple[set[Letter], set[Letter], set[str]]:
+    def information(self) -> Tuple[Set[Letter], Set[Letter], Set[str], Dict[str, int]]:
         """
         Produces the summary of information from all the current guesses in the game.
 
@@ -238,35 +238,40 @@ class Game:
         correct = set()
         wrong_position = set()
         not_in_word = set()
+        max_occurrences = {}
 
         # Aggregate guess information
         for guess in self.guesses:
+            include, exclude = {}, {}
             for letter in guess:
-                match letter.state:
-                    case GuessState.CORRECT:
-                        correct.add(letter)
-                    case GuessState.POSITION:
-                        wrong_position.add(letter)
-                    case GuessState.WRONG:
-                        not_in_word.add(letter.guess)
-        return correct, wrong_position, not_in_word
+                include[str(letter)] = 0
+                if letter.state == GuessState.CORRECT:
+                    correct.add(letter)
+                    include[str(letter)] += 1
+                elif letter.state == GuessState.POSITION:
+                    wrong_position.add(letter)
+                    include[str(letter)] += 1
+                elif letter.state == GuessState.WRONG:
+                    not_in_word.add(letter.guess)
+                    exclude[str(letter)] = True
 
-    @property
-    def best_move(self) -> Word:
-        if not self._best_move:
-            self._best_move = get_best_move(self.possible_answers)
-        return self._best_move
+            for letter in include:
+                if include[letter] > 0 and letter in exclude:
+                    max_occurrences[letter] = include[letter]
+        return correct, wrong_position, not_in_word, max_occurrences
 
     def filter_words_from_info(
         self,
-        correct: set[Letter],
-        wrong_position: set[Letter],
-        not_in_word: set[str],
-    ) -> list[Word]:
+        correct: Set[Letter],
+        wrong_position: Set[Letter],
+        not_in_word: Set[str],
+        max_occurrences: Optional[Dict[str, int]],
+    ) -> List[Word]:
         return filter_words_from_info(
             correct,
             wrong_position,
             not_in_word,
+            max_occurrences,
             self.word_list,
         )
 
@@ -295,7 +300,6 @@ class Game:
             )
 
         self.guesses.append(guess_states)
-        self._best_move = None
         return True
 
     def __str__(self):
@@ -356,34 +360,47 @@ def _guess_mask(word: str, answer: str):
     return guess
 
 
-def get_best_move(word_list: list[Word]) -> Word:
-    e_map = compute_entropy(word_list)
+def get_best_move(
+    word_list: List[Word],
+    num_processes: int = 2,
+    deep: bool = False,
+) -> Word:
+    e_map = compute_entropy(word_list, num_processes=num_processes)
     best_words = sort_by_entropy(e_map)
+    if deep:
+        e_map = compute_deep_entropy(best_words[:5], word_list)
+        best_words = sort_by_entropy(e_map)
     return best_words[0]
 
 
 def filter_words_from_info(
-    correct: set[Letter],
-    wrong_position: set[Letter],
-    not_in_word: set[str],
-    word_list: Optional[list[Word]] = None,
-) -> list[Word]:
+    correct: Set[Letter],
+    wrong_position: Set[Letter],
+    not_in_word: Set[str],
+    max_occurrences: Dict[str, int],
+    word_list: Optional[List[Word]] = None,
+) -> List[Word]:
     word_list = word_list or load_words()
     possible_words = []
     answer_has_letter = {str(c) for c in correct}.union({str(c) for c in wrong_position})
     for word in word_list:
+        exceeded_max = False
+        for letter in max_occurrences:
+            if word.word.count(letter) > max_occurrences[letter]:
+                exceeded_max = True
         if (
             all(c.guess == word.word[c.position] for c in correct) and
             all(p.guess in word.word for p in wrong_position) and
             all(p.guess != word.word[p.position] for p in wrong_position) and
             # For incorrect letters, need to make sure multiple occurrences are catered for
-            all(n not in word.word for n in not_in_word if n not in answer_has_letter)
+            all(n not in word.word for n in not_in_word if n not in answer_has_letter) and
+            not exceeded_max
         ):
             possible_words.append(word)
     return possible_words
 
 
-def load_words(file_path: str = WORD_LIST) -> list[Word]:
+def load_words(file_path: str = WORD_LIST) -> List[Word]:
     word_list = []
     with open(file_path, 'r') as f:
         for line in f.readlines():
@@ -404,7 +421,7 @@ def save_guess_db(
         json.dump(word_db, f, indent=4)
 
 
-def load_word_db(file_path: str = WORD_DB) -> dict[str, Word]:
+def load_word_db(file_path: str = WORD_DB) -> Dict[str, Word]:
     with open(file_path, 'r') as f:
         word_db = json.load(f)
     return {
@@ -414,7 +431,7 @@ def load_word_db(file_path: str = WORD_DB) -> dict[str, Word]:
 
 
 def save_word_db(
-    word_db: Union[WordDb, list[Word]],
+    word_db: Union[WordDb, List[Word]],
     file_path: str = WORD_DB,
 ):
     if isinstance(word_db, list):
@@ -449,7 +466,7 @@ def play_game():
 
 
 def get_many_probabilities(
-    possible_words: list[Word],
+    possible_words: List[Word],
     verbose: bool = False,
     num_processes: int = 2,
 ) -> WordGuessMap:
@@ -464,7 +481,7 @@ def get_many_probabilities(
 
 
 def get_many_info_values(
-    possible_words: list[Word],
+    possible_words: List[Word],
     verbose: bool = False,
     num_processes: int = 2,
 ) -> WordGuessMap:
@@ -496,8 +513,8 @@ def merge_guess_maps(
 
 
 def calculate_entropy(
-    pi_map: dict[str, dict[str, dict[str, float]]],
-) -> dict[str, dict[str, float]]:
+    pi_map: Dict[str, Dict[str, Dict[str, float]]],
+) -> Dict[str, Dict[str, float]]:
     entropy_map = {}
     for word in pi_map:
         entropy = 0
@@ -510,11 +527,11 @@ def calculate_entropy(
 
 
 def compute_entropy(
-    possible_words: list[Word],
+    possible_words: List[Word],
     save: bool = False,
     verbose: bool = False,
     num_processes: int = 2,
-) -> dict[str, dict[str, float]]:
+) -> Dict[str, Dict[str, float]]:
     probs = get_many_probabilities(possible_words, verbose, num_processes=num_processes)
     info = get_many_info_values(possible_words, verbose, num_processes=num_processes)
 
@@ -525,7 +542,7 @@ def compute_entropy(
     return calculate_entropy(pi_map)
 
 
-def sort_by_entropy(entropy_map: WordDb) -> list[Word]:
+def sort_by_entropy(entropy_map: WordDb) -> List[Word]:
     word_list = [Word(w, data['H']) for w, data in entropy_map.items()]
     return sorted(word_list, key=lambda w: -w.entropy)
 
@@ -557,13 +574,14 @@ def crude_opening_pairs():
 
 def bot_play(
     word: Union[str, Word],
-    initial_guesses: Optional[list[str]] = None,
-    filter_answers: Optional[list[Word]] = None,
+    initial_guesses: Optional[List[str]] = None,
+    filter_answers: Optional[List[Word]] = None,
     verbose: bool = True,
     num_processes: int = 2,
+    deep: bool = False,
 ) -> int:
     game = Game(word)
-    initial_guesses = initial_guesses or ['ROLES', 'PAINT']
+    initial_guesses = initial_guesses or ['TONES']
     for guess in initial_guesses:
         game.guess(guess)
 
@@ -572,9 +590,14 @@ def bot_play(
             possible = [w for w in game.possible_answers if w in filter_answers]
         else:
             possible = game.possible_answers
-        e_map = compute_entropy(possible, num_processes=num_processes)
-        best_words = sort_by_entropy(e_map)
-        game.guess(best_words[0])
+
+        word = get_best_move(
+            possible,
+            num_processes=num_processes,
+            # Optionally Deep search for second guess. Expensive but better
+            deep=len(game.guesses) == 1 and deep,
+        )
+        game.guess(word)
 
     if verbose:
         log.info(f'Guessing {word}...')
@@ -583,8 +606,8 @@ def bot_play(
 
 
 def test_bot(
-    initial_guesses: list[str],
-    filter_answers: Optional[list[Word]],
+    initial_guesses: List[str],
+    filter_answers: Optional[List[Word]],
     k: Optional[int] = None,
     verbose: bool = False,
     num_processes: int = 2,
@@ -648,19 +671,13 @@ def test_bot(
 
 def deep_probability_map(
     word: Word,
-    possible_words: Optional[list[Word]] = None,
-) -> dict[str, float]:
+    possible_words: Optional[List[Word]] = None,
+) -> Dict[str, float]:
 
     possible_words = possible_words or load_words()
     histogram = {}
     total = 0
     for i, answer in enumerate(possible_words):
-        if i % 500 == 0:
-            log.info(
-                f'\rCalculating Probability Map for {word}: '
-                f'[{round(100 * (i / len(possible_words)))}%]',
-            )
-
         game = Game(answer)
         game.guess(word)
         first_guess = game.guesses[0].basic_str
@@ -681,18 +698,12 @@ def deep_probability_map(
 
 def deep_information_map(
     word: Word,
-    possible_words: Optional[list[Word]] = None,
-) -> dict[str, float]:
+    possible_words: Optional[List[Word]] = None,
+) -> Dict[str, float]:
     possible_words = possible_words or load_words()
     info_map = {}
 
     for i, answer in enumerate(possible_words):
-        if i % 500 == 0:
-            log.info(
-                f'\rCalculating Info Map for {word}: '
-                f'[{round(100 * (i / len(possible_words)))}%]',
-            )
-
         game = Game(answer)
         game.guess(word)
         first_guess = game.guesses[0].basic_str
@@ -709,10 +720,11 @@ def deep_information_map(
 
 
 def compute_deep_entropy(
-    input_words: list[Word],
-    possible_words: Optional[list[Word]] = None,
+    input_words: List[Word],
+    possible_words: Optional[List[Word]] = None,
     num_processes: int = 2,
-) -> dict[str, dict[str, float]]:
+    verbose: bool = False,
+) -> Dict[str, Dict[str, float]]:
     possible_words = possible_words or load_words()
     input_list = [(w, possible_words) for w in input_words]
 
@@ -725,7 +737,7 @@ def compute_deep_entropy(
             input_list,
             function,
             zip_with=lambda word, _word_list: str(word),
-            verbose=False,
+            verbose=verbose,
             num_processes=num_processes,
         )
 
@@ -733,7 +745,7 @@ def compute_deep_entropy(
     return calculate_entropy(pi_map)
 
 
-def _two_guess_iv(word: Word, initial_guesses: list[Word]) -> float:
+def _two_guess_iv(word: Word, initial_guesses: List[Word]) -> float:
     game = Game(word)
     for guess in initial_guesses:
         game.guess(guess)
@@ -743,7 +755,7 @@ def _two_guess_iv(word: Word, initial_guesses: list[Word]) -> float:
 
 
 def compute_avg_iv(
-    initial_guesses: list[str],
+    initial_guesses: List[str],
     num_processes: int = 2,
 ) -> float:
     all_words = load_words()
