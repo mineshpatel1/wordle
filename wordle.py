@@ -19,7 +19,6 @@ WordDb = Dict[str, Dict[str, float]]
 
 WORD_SIZE = 5
 NUM_GUESSES = 6
-NGRAM_PROB_THRESHOLD = 4.3809397082261724e-11
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
@@ -805,11 +804,12 @@ def compute_avg_iv(
 
 def get_ngram_ratio(words: List[str]) -> Dict[str, float]:
     url = f'https://books.google.com/ngrams/json?content={",".join(words)}' \
-          f'&year_start=2018&year_end=2019&corpus=26&smoothing=0'
+          f'&year_start=1990&year_end=2019&corpus=26&smoothing=0'
     res = requests.get(url)
     out = {}
     for item in res.json():
-        out[item['ngram']] = item['timeseries'][1]
+        avg = sum(item['timeseries']) / len(item['timeseries'])
+        out[item['ngram']] = avg
     return out
 
 
