@@ -8,6 +8,9 @@ import random
 import requests
 import time
 from random import randrange
+from selenium import webdriver
+from selenium.webdriver.remote.webdriver import WebElement
+from selenium.webdriver.chrome.webdriver import WebDriver
 from enum import Enum
 from utils import log, chunks, multi_process, batch
 from typing import Dict, List, Optional, Set, Tuple, Union
@@ -19,6 +22,8 @@ WordDb = Dict[str, Dict[str, float]]
 
 WORD_SIZE = 5
 NUM_GUESSES = 6
+NUM_PROCESSES = 5
+INITIAL_GUESSES = ["TONES"]
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
@@ -27,8 +32,6 @@ GUESS_DB = os.path.join(WORD_LIST_DIR, 'uk_guess_db.json')
 WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_word_db.json')
 SCORE_ANSWERS_DB = os.path.join(WORD_LIST_DIR, 'scores-answers.json')
 SCORE_OVERALL_DB = os.path.join(WORD_LIST_DIR, 'scores-overall.json')
-
-NUM_PROCESSES = 5
 
 
 class WrongWordSize(ValueError):
@@ -48,6 +51,15 @@ class GuessState(Enum):
             'C': GuessState.CORRECT,
         }
         return convert[basic_id]
+
+    @staticmethod
+    def from_web(web_id: str) -> GuessState:
+        convert = {
+            "absent": GuessState.WRONG,
+            "present": GuessState.POSITION,
+            "correct": GuessState.CORRECT,
+        }
+        return convert[web_id.lower()]
 
 
 class Word:
@@ -247,30 +259,8 @@ class Game:
         Returns:
             Tuple of correct letters, wrong position letters and letters not in the word.
         """
-        correct = set()
-        wrong_position = set()
-        not_in_word = set()
-        max_occurrences = {}
 
-        # Aggregate guess information
-        for guess in self.guesses:
-            include, exclude = {}, {}
-            for letter in guess:
-                include[str(letter)] = include.get(str(letter), 0)
-                if letter.state == GuessState.CORRECT:
-                    correct.add(letter)
-                    include[str(letter)] += 1
-                elif letter.state == GuessState.POSITION:
-                    wrong_position.add(letter)
-                    include[str(letter)] += 1
-                elif letter.state == GuessState.WRONG:
-                    not_in_word.add(letter.guess)
-                    exclude[str(letter)] = True
-
-            for letter in include:
-                if include[letter] > 0 and letter in exclude:
-                    max_occurrences[letter] = include[letter]
-        return correct, wrong_position, not_in_word, max_occurrences
+        return _get_information_from_guesses(self.guesses)
 
     def filter_words_from_info(
         self,
@@ -325,6 +315,165 @@ class Game:
             out += str(guess)
             out += '\n'
         return out
+
+
+class WordleWebDriver:
+    URL: str = "https://www.nytimes.com/games/wordle/index.html"
+    GUESS_STATE = {
+        "absent": GuessState.WRONG,
+        "present": GuessState.POSITION,
+        "correct": GuessState.CORRECT,
+    }
+
+    def __init__(
+        self,
+        filter_answers: bool = True,
+        initial_guesses: Optional[List[str]] = None,
+    ):
+        opts = webdriver.ChromeOptions()
+        opts.add_argument("--incognito")
+        self.driver: WebDriver = webdriver.Chrome(options=opts)
+        self.filter_answers = filter_answers
+        self.initial_guesses = initial_guesses or INITIAL_GUESSES
+        self.possible_words = load_words(ANSWER_LIST) if filter_answers else load_words()
+        self.num_processes = NUM_PROCESSES
+        self.guesses = []
+
+    def open_site(self):
+        self.driver.get(self.URL)
+        self.driver.maximize_window()
+        self.close_popups()
+
+    def close_popups(self):
+        reject_cookies = self.driver.find_element_by_id('pz-gdpr-btn-reject')
+        reject_cookies.click()
+
+        close_modal = """
+                document
+                    .querySelector('game-app')
+                    .shadowRoot.querySelector('game-modal')
+                    .shadowRoot.querySelector('.overlay').click()
+                """
+        self.driver.execute_script(close_modal)
+
+    def type_key(self, letter: str):
+        hit_key = f"""
+        return document
+            .querySelector('game-app').shadowRoot
+            .querySelector('#game game-keyboard').shadowRoot
+            .querySelector('button[data-key="{letter}"]').click()
+        """
+        self.driver.execute_script(hit_key)
+
+    def has_won(self) -> bool:
+        has_won = """
+        return document
+            .querySelector('game-app').shadowRoot
+            .querySelectorAll('game-row[win]')
+        """
+        elements = self.driver.execute_script(has_won)
+        return len(elements) > 0
+
+    def get_guess(self, word: str) -> Optional[Guess]:
+        get_word_tiles = f"""
+        return document
+            .querySelector('game-app').shadowRoot
+            .querySelector('game-row[letters="{word}"]').shadowRoot
+            .querySelectorAll('game-tile')
+        """
+        tiles = self.driver.execute_script(get_word_tiles)
+        guess = Guess()
+        for i, tile in enumerate(tiles):
+            letter_str = tile.get_attribute('letter')
+            state = tile.get_attribute('evaluation')
+
+            # If empty, it means the word isn't allowed by NYT
+            # Should prompt a retry in this case.
+            if not state:
+                return None
+
+            letter = Letter(letter_str, i, GuessState.from_web(state))
+            guess.append(letter)
+        return guess
+
+    def enter_word(self, word: str, delay: float = 0.3) -> bool:
+        for letter in word:
+            self.type_key(letter)
+            time.sleep(delay)
+        self.type_key("↵")
+        guess = self.get_guess(word)
+        if not guess:
+            return False
+        self.guesses.append(guess)
+
+        return True
+
+    def clear_word(self, word: str, delay: float = 0.3):
+        for i in range(5):
+            self.type_key("←")
+            time.sleep(delay)
+
+    def play(self):
+        self.open_site()
+        time.sleep(2)
+
+        for guess in self.initial_guesses:
+            self.enter_word(guess.lower())
+
+        while len(self.guesses) < NUM_GUESSES and not self.has_won():
+            info = _get_information_from_guesses(self.guesses)
+            self.possible_words = filter_words_from_info(*info, self.possible_words)  # noqa
+            word = get_best_move(
+                self.possible_words,
+                num_processes=self.num_processes,
+                must_answer=len(self.guesses) == NUM_GUESSES - 1,  # Last Go
+                deep=False,
+            )
+            log.info(f"Best move: {word} {self.has_won()}")
+            allowed = self.enter_word(str(word).lower())
+
+            # Initiate retry
+            if not allowed:
+                time.sleep(1)
+                idx = self.possible_words.index(word)
+                del self.possible_words[idx]
+                self.clear_word(str(word))
+                time.sleep(1)
+            else:
+                time.sleep(3)
+
+        log.info("Game Over.")
+        time.sleep(3)
+        self.driver.close()
+
+
+def _get_information_from_guesses(
+    guesses: List[Guess]
+) -> Tuple[Set[Letter], Set[Letter], Set[str], Dict[str, int]]:
+    correct = set()
+    wrong_position = set()
+    not_in_word = set()
+    max_occurrences = {}
+
+    # Aggregate guess information
+    for guess in guesses:
+        include, exclude = {}, {}
+        for letter in guess:
+            include[str(letter)] = include.get(str(letter), 0)
+            if letter.state == GuessState.CORRECT:
+                correct.add(letter)
+                include[str(letter)] += 1
+            elif letter.state == GuessState.POSITION:
+                wrong_position.add(letter)
+                include[str(letter)] += 1
+            elif letter.state == GuessState.WRONG:
+                not_in_word.add(letter.guess)
+                exclude[str(letter)] = True
+
+        for letter in include:
+            if include[letter] > 0 and letter in exclude:
+                max_occurrences[letter] = include[letter]
+    return correct, wrong_position, not_in_word, max_occurrences
 
 
 def _guess_mask(word: str, answer: str):
@@ -573,7 +722,9 @@ def compute_entropy(
     return calculate_entropy(pi_map)
 
 
-def sort_by_entropy(entropy_map: WordDb) -> List[Word]:
+def sort_by_entropy(
+    entropy_map: WordDb,
+) -> List[Word]:
     word_list = [Word(w, data['H']) for w, data in entropy_map.items()]
     return sorted(word_list, key=lambda w: -w.entropy)
 
@@ -612,7 +763,7 @@ def bot_play(
     deep: bool = False,
 ) -> int:
     game = Game(word)
-    initial_guesses = initial_guesses or ['TONES']
+    initial_guesses = initial_guesses or INITIAL_GUESSES
     for guess in initial_guesses:
         game.guess(guess)
 
