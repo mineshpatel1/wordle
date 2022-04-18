@@ -23,7 +23,7 @@ WordDb = Dict[str, Dict[str, float]]
 WORD_SIZE = 5
 NUM_GUESSES = 6
 NUM_PROCESSES = 5
-INITIAL_GUESSES = ["TONES"]
+INITIAL_GUESSES = ["CRANE"]
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
@@ -244,11 +244,7 @@ class Game:
             Information value, in bits, currently known in the game. Each bit
             represents a halving of the number of remaining possibilities.
         """
-        if len(self.possible_answers) == 0:
-            log.info((self.guesses, len(self.word_list)))
-            for guess in self.guesses:
-                log.info(str(guess))
-        return -1 * math.log(len(self.possible_answers) / len(self.word_list))
+        return _get_information_value(len(self.possible_answers), len(self.word_list))
 
     @property
     def information(self) -> Tuple[Set[Letter], Set[Letter], Set[str], Dict[str, int]]:
@@ -413,6 +409,7 @@ class WordleWebDriver:
         log.info('Initialising...')
         filter_answers = filter_answers
         possible_words = load_words(ANSWER_LIST) if filter_answers else load_words()
+        total_words = len(possible_words)
         initial_guesses = initial_guesses or INITIAL_GUESSES
         self.open_site()
         time.sleep(2)
@@ -424,11 +421,12 @@ class WordleWebDriver:
         while len(self.guesses) < NUM_GUESSES and not self.has_won():
             info = _get_information_from_guesses(self.guesses)
             possible_words = filter_words_from_info(*info, possible_words)  # noqa
+            info_value = _get_information_value(len(possible_words), total_words)
             word = get_best_move(
                 possible_words,
+                explore=(2 <= len(self.guesses) <= 4 and info_value < 6),
                 num_processes=self.num_processes,
                 must_answer=len(self.guesses) == NUM_GUESSES - 1,  # Last Go
-                deep=False,
             )
             log.info(f"Best move: {word}")
             allowed = self.enter_word(str(word).lower())
@@ -441,11 +439,15 @@ class WordleWebDriver:
                 self.clear_word(str(word))
                 time.sleep(1)
             else:
-                time.sleep(2)
+                time.sleep(3)
 
         log.info(f"Game Over: {'Won' if self.has_won() else 'Lost'}")
         time.sleep(3)
         self.driver.close()
+
+
+def _get_information_value(num_possible: int, num_total: int) -> float:
+    return -1 * math.log(num_possible / num_total)
 
 
 def _get_information_from_guesses(
@@ -527,23 +529,23 @@ def _guess_mask(word: str, answer: str):
 
 def get_best_move(
     word_list: List[Word],
-    num_processes: int = 2,
-    deep: bool = False,
+    num_processes: int = NUM_PROCESSES,
+    explore: bool = False,
     must_answer: bool = False,
 ) -> Word:
-    e_map = compute_entropy(word_list, num_processes=num_processes)
-    best_words = sort_by_entropy(e_map)
-    if deep:
-        e_map = compute_deep_entropy(best_words[:5], word_list)
-        best_words = sort_by_entropy(e_map)
-
-    unique_entropies = set(w.entropy for w in best_words[:5])
-
-    # When the answers are similar in quality, look for other words (that may not be an answer)
-    # Use must_answer to a force a possible guess, e.g. on the last go
-    if len(unique_entropies) < 3 < len(word_list) and not must_answer:
+    if explore:
         e_map = compute_entropy(word_list, load_words())  # Use all available words
         best_words = sort_by_entropy(e_map)
+    else:
+        e_map = compute_entropy(word_list, num_processes=num_processes)
+        best_words = sort_by_entropy(e_map)
+
+        # When the answers are similar in quality, look for other words (that may not be an answer)
+        # Use must_answer to a force a possible guess, e.g. on the last go
+        unique_entropies = set(w.entropy for w in best_words[:5])
+        if len(unique_entropies) < 3 < len(word_list) and not must_answer:
+            e_map = compute_entropy(word_list, load_words())  # Use all available words
+            best_words = sort_by_entropy(e_map)
 
     return best_words[0]
 
@@ -742,7 +744,6 @@ def bot_play(
     filter_answers: Optional[List[Word]] = None,
     verbose: bool = True,
     num_processes: int = 2,
-    deep: bool = False,
 ) -> int:
     game = Game(word)
     initial_guesses = initial_guesses or INITIAL_GUESSES
@@ -758,8 +759,7 @@ def bot_play(
         word = get_best_move(
             possible,
             num_processes=num_processes,
-            # Optionally Deep search for second guess. Expensive but better
-            deep=deep and len(game.guesses) == 1,
+            explore=(2 <= len(game.guesses) <= 4 and game.information_value < 6),
             must_answer=len(game.guesses) == game.num_guesses - 1,  # Last Go
         )
         game.guess(word)
