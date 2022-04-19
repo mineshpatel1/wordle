@@ -409,7 +409,8 @@ class WordleWebDriver:
         log.info('Initialising...')
         filter_answers = filter_answers
         possible_words = load_words(ANSWER_LIST) if filter_answers else load_words()
-        total_words = len(possible_words)
+        all_words = load_words()
+        total_num_words = len(possible_words)
         initial_guesses = initial_guesses or INITIAL_GUESSES
         self.open_site()
         time.sleep(2)
@@ -421,9 +422,10 @@ class WordleWebDriver:
         while len(self.guesses) < NUM_GUESSES and not self.has_won():
             info = _get_information_from_guesses(self.guesses)
             possible_words = filter_words_from_info(*info, possible_words)  # noqa
-            info_value = _get_information_value(len(possible_words), total_words)
+            info_value = _get_information_value(len(possible_words), total_num_words)
             word = get_best_move(
                 possible_words,
+                all_words=all_words,
                 explore=(2 <= len(self.guesses) <= 4 and info_value < 6),
                 num_processes=self.num_processes,
                 must_answer=len(self.guesses) == NUM_GUESSES - 1,  # Last Go
@@ -434,8 +436,10 @@ class WordleWebDriver:
             # Initiate retry
             if not allowed:
                 time.sleep(1)
-                idx = possible_words.index(word)
-                del possible_words[idx]
+                if word in possible_words:
+                    idx = possible_words.index(word)
+                    del possible_words[idx]
+                del all_words[all_words.index(word)]
                 self.clear_word(str(word))
                 time.sleep(1)
             else:
@@ -532,9 +536,11 @@ def get_best_move(
     num_processes: int = NUM_PROCESSES,
     explore: bool = False,
     must_answer: bool = False,
+    all_words: Optional[List[Word]] = None,
 ) -> Word:
     if explore:
-        e_map = compute_entropy(word_list, load_words())  # Use all available words
+        all_words = all_words or load_words()
+        e_map = compute_entropy(word_list, all_words)  # Use all available words
         best_words = sort_by_entropy(e_map)
     else:
         e_map = compute_entropy(word_list, num_processes=num_processes)
@@ -544,7 +550,8 @@ def get_best_move(
         # Use must_answer to a force a possible guess, e.g. on the last go
         unique_entropies = set(w.entropy for w in best_words[:5])
         if len(unique_entropies) < 3 < len(word_list) and not must_answer:
-            e_map = compute_entropy(word_list, load_words())  # Use all available words
+            all_words = all_words or load_words()
+            e_map = compute_entropy(word_list, all_words)  # Use all available words
             best_words = sort_by_entropy(e_map)
 
     return best_words[0]
@@ -955,7 +962,8 @@ def batch_fetch_ngrams(words):
 
 
 def main():
-    pass
+    driver = WordleWebDriver()
+    driver.play()
 
 
 if __name__ == '__main__':
