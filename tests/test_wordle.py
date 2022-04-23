@@ -26,30 +26,30 @@ class Words(unittest.TestCase):
     def test_guesses(self):
         game = Game('ghost')
         game.guess('pious')
-        self.assertEqual(str(game.last_guess), '🟥🟥🟩🟥🟨')
+        self.assertEqual(str(game.last_guess), '⬛⬛🟩⬛🟨')
         game.guess('slosh')
-        self.assertEqual(str(game.last_guess), '🟥🟥🟩🟩🟨')
+        self.assertEqual(str(game.last_guess), '⬛⬛🟩🟩🟨')
         game.guess('ghost')
         self.assertEqual(str(game.last_guess), '🟩🟩🟩🟩🟩')
 
     def test_repeated_letters(self):
         game = Game('where')
         game.guess('there')
-        self.assertEqual(str(game.last_guess), '🟥🟩🟩🟩🟩')
+        self.assertEqual(str(game.last_guess), '⬛🟩🟩🟩🟩')
         game.guess('keeps')
-        self.assertEqual(str(game.last_guess), '🟥🟨🟩🟥🟥')
+        self.assertEqual(str(game.last_guess), '⬛🟨🟩⬛⬛')
         game.guess('apple')
-        self.assertEqual(str(game.last_guess), '🟥🟥🟥🟥🟩')
+        self.assertEqual(str(game.last_guess), '⬛⬛⬛⬛🟩')
         game.guess('abbey')
-        self.assertEqual(str(game.last_guess), '🟥🟥🟥🟨🟥')
+        self.assertEqual(str(game.last_guess), '⬛⬛⬛🟨⬛')
 
         game = Game('abbey')
         game.guess('keeps')
-        self.assertEqual(str(game.last_guess), '🟥🟨🟥🟥🟥')
+        self.assertEqual(str(game.last_guess), '⬛🟨⬛⬛⬛')
 
         game = Game('koran')
         game.guess('aaron')
-        self.assertEqual(str(game.last_guess), '🟨🟥🟩🟨🟩')
+        self.assertEqual(str(game.last_guess), '🟨⬛🟩🟨🟩')
 
     def test_guess_filter(self):
         game = Game('chest')

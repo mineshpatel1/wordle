@@ -21,7 +21,7 @@ GuessDb = Dict[str, WordGuessMap]
 WordDb = Dict[str, Dict[str, float]]
 
 WORD_SIZE = 5
-NUM_GUESSES = 6
+MAX_GUESSES = 6
 NUM_PROCESSES = 5
 INITIAL_GUESSES = ["CRANE"]
 BASE_DIR = os.path.dirname(__file__)
@@ -38,7 +38,7 @@ class WrongWordSize(ValueError):
 
 
 class GuessState(Enum):
-    WRONG = '🟥'
+    WRONG = '⬛'
     POSITION = '🟨'
     CORRECT = '🟩'
 
@@ -120,7 +120,7 @@ class Word:
 
         prob_map = {}
         for answer in possible_words:
-            guess_str = _guess_mask(self.word, answer.word)
+            guess_str = get_hint_from_guess(self.word, answer.word)
             prob_map[guess_str] = prob_map.get(guess_str, 0)
             prob_map[guess_str] += 1
 
@@ -137,7 +137,7 @@ class Word:
 
         info_map = {}
         for answer in possible_words:
-            guess_str = _guess_mask(self.word, answer.word)
+            guess_str = get_hint_from_guess(self.word, answer.word)
             if guess_str not in info_map:
                 game = Game(answer, word_list=possible_words)
                 game.guess(self.word, skip_validation=True)
@@ -206,7 +206,7 @@ class Game:
         word_list: Optional[List[Word]] = None
     ):
         self.answer: Word = Word(answer) if isinstance(answer, str) else answer
-        self.num_guesses: int = NUM_GUESSES
+        self.max_guesses: int = MAX_GUESSES
         self.turn: int = 0
         self.guesses: List[Guess] = []
         self.word_list: List[Word] = word_list or load_words()
@@ -214,7 +214,7 @@ class Game:
 
     @property
     def is_over(self) -> bool:
-        if len(self.guesses) >= self.num_guesses:
+        if len(self.guesses) >= self.max_guesses:
             return True
 
         return self.is_won
@@ -288,7 +288,7 @@ class Game:
             raise ValueError(f"{guess} is not a valid word, please try again.")
 
         guess_states = Guess()
-        guess_str = _guess_mask(guess.word, self.answer.word)
+        guess_str = get_hint_from_guess(guess.word, self.answer.word)
 
         for i, basic_guess in enumerate(guess_str):
             guess_states.append(
@@ -419,7 +419,7 @@ class WordleWebDriver:
             self.enter_word(guess.lower())
             time.sleep(2)
 
-        while len(self.guesses) < NUM_GUESSES and not self.has_won():
+        while len(self.guesses) < MAX_GUESSES and not self.has_won():
             info = _get_information_from_guesses(self.guesses)
             possible_words = filter_words_from_info(*info, possible_words)  # noqa
             info_value = _get_information_value(len(possible_words), total_num_words)
@@ -428,7 +428,7 @@ class WordleWebDriver:
                 all_words=all_words,
                 explore=(2 <= len(self.guesses) <= 4 and info_value < 6),
                 num_processes=self.num_processes,
-                must_answer=len(self.guesses) == NUM_GUESSES - 1,  # Last Go
+                must_answer=len(self.guesses) == MAX_GUESSES - 1,  # Last Go
             )
             log.info(f"Best move: {word}")
             allowed = self.enter_word(str(word).lower())
@@ -483,20 +483,23 @@ def _get_information_from_guesses(
     return correct, wrong_position, not_in_word, max_occurrences
 
 
-def _guess_mask(word: str, answer: str):
+def get_hint_from_guess(guess: str, answer: str) -> str:
     """Fast implementation of guessing logic with basic types."""
-    guess = ''
+    guess = guess.upper()
+    answer = answer.upper()
+
+    hint = ''
     l_count = {}
-    for i, letter in enumerate(word):
+    for i, letter in enumerate(guess):
         l_count[letter] = l_count.get(letter, 0)
         l_count[letter] += 1
 
         if answer[i] == letter:
-            guess += 'C'
+            hint += 'C'
         elif letter in answer:
-            guess += 'P'
+            hint += 'P'
         else:
-            guess += '.'
+            hint += '.'
 
     repeated_letters = {k for k, v in l_count.items() if v > 1}
 
@@ -515,20 +518,20 @@ def _guess_mask(word: str, answer: str):
             num_matched = 0
 
             # Count all the exact matches first
-            for i, letter in enumerate(guess):
-                if letter == 'C' and word[i] == repeated_letter:
+            for i, letter in enumerate(hint):
+                if letter == 'C' and guess[i] == repeated_letter:
                     num_matched += 1
 
             # For remaining occurrences, ensure only the number of occurrences in the answer are indicated.
-            for i, letter in enumerate(guess):
+            for i, letter in enumerate(hint):
                 if (
                     letter == 'P' and
-                    word[i] == repeated_letter
+                    guess[i] == repeated_letter
                 ):
                     num_matched += 1
                     if num_matched > num_in_answer:
-                        guess = guess[:i] + '.' + guess[i + 1:]
-    return guess
+                        hint = hint[:i] + '.' + hint[i + 1:]
+    return hint
 
 
 def get_best_move(
@@ -561,10 +564,12 @@ def filter_words_from_info(
     correct: Set[Letter],
     wrong_position: Set[Letter],
     not_in_word: Set[str],
-    max_occurrences: Dict[str, int],
+    max_occurrences: Optional[Dict[str, int]] = None,
     word_list: Optional[List[Word]] = None,
 ) -> List[Word]:
     word_list = word_list or load_words()
+    max_occurrences = max_occurrences or {letter: 1 for letter in not_in_word}
+
     possible_words = []
     answer_has_letter = {str(c) for c in correct}.union({str(c) for c in wrong_position})
     for word in word_list:
@@ -767,7 +772,7 @@ def bot_play(
             possible,
             num_processes=num_processes,
             explore=(2 <= len(game.guesses) <= 4 and game.information_value < 6),
-            must_answer=len(game.guesses) == game.num_guesses - 1,  # Last Go
+            must_answer=len(game.guesses) == game.max_guesses - 1,  # Last Go
         )
         game.guess(word)
 
@@ -856,7 +861,7 @@ def deep_probability_map(
 
         for second in game.possible_answers:
             if second != word:
-                second_guess = _guess_mask(second.word, answer.word)
+                second_guess = get_hint_from_guess(second.word, answer.word)
                 key = f"{first_guess}|{second_guess}"
                 histogram[key] = histogram.get(key, 0)
                 histogram[key] += 1
@@ -882,7 +887,7 @@ def deep_information_map(
 
         for second in game.possible_answers:
             if second != word:
-                second_guess = _guess_mask(second.word, answer.word)
+                second_guess = get_hint_from_guess(second.word, answer.word)
                 key = f"{first_guess}|{second_guess}"
 
                 if key not in info_map:
@@ -962,8 +967,7 @@ def batch_fetch_ngrams(words):
 
 
 def main():
-    driver = WordleWebDriver()
-    driver.play()
+    pass
 
 
 if __name__ == '__main__':
