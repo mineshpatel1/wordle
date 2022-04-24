@@ -22,6 +22,7 @@ WordDb = Dict[str, Dict[str, float]]
 WORD_SIZE = 5
 MAX_GUESSES = 6
 NUM_PROCESSES = 5
+IV_THRESHOLD = 11
 INITIAL_GUESSES = ["CRANE"]
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
@@ -425,7 +426,7 @@ class WordleWebDriver:
             word = get_best_move(
                 possible_words,
                 all_words=all_words,
-                explore=(2 <= len(self.guesses) <= 4 and info_value < 6),
+                explore=(2 <= len(self.guesses) <= 4 and info_value < IV_THRESHOLD),
                 num_processes=self.num_processes,
                 must_answer=len(self.guesses) == MAX_GUESSES - 1,  # Last Go
             )
@@ -450,7 +451,7 @@ class WordleWebDriver:
 
 
 def _get_information_value(num_possible: int, num_total: int) -> float:
-    return -1 * math.log(num_possible / num_total)
+    return -1 * math.log(num_possible / num_total, 2)
 
 
 def _get_information_from_guesses(
@@ -594,6 +595,10 @@ def load_words(file_path: str = WORD_LIST) -> List[Word]:
         for line in f.readlines():
             word_list.append(Word(line.strip()))
     return word_list
+
+
+def load_answers() -> List[Word]:
+    return load_words(ANSWER_LIST)
 
 
 def load_word_db(file_path: str = WORD_DB) -> Dict[str, Word]:
@@ -770,7 +775,7 @@ def bot_play(
         word = get_best_move(
             possible,
             num_processes=num_processes,
-            explore=(2 <= len(game.guesses) <= 4 and game.information_value < 6),
+            explore=(2 <= len(game.guesses) <= 4 and game.information_value < IV_THRESHOLD),
             must_answer=len(game.guesses) == game.max_guesses - 1,  # Last Go
         )
         game.guess(word)

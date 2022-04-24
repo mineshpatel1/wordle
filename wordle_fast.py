@@ -1,10 +1,15 @@
 import functools
 import os
+import math
+import time
 import random
-from utils import log, multi_process, batch
-from typing import Any, Optional, Union
+from utils import log, multi_process
+from typing import Optional
 
 MAX_GUESSES = 6
+NUM_PROCESSES = 5
+INITIAL_GUESSES = ['RATES']
+IV_THRESHOLD = 9
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
@@ -50,6 +55,10 @@ class Game:
             self.word_list,
             *get_info_from_hints(self.guesses, self.hints)
         )
+
+    @property
+    def information_value(self) -> float:
+        return -1 * math.log(len(self.possible_words) / len(self.word_list), 2)
 
     def make_guess(self, guess: str) -> Optional[str]:
         guess = guess.upper()
@@ -118,7 +127,7 @@ def get_hint_from_guess(guess: str, answer: str) -> str:
 def get_info_from_hints(
     guesses: list[str],
     hints: list[str],
-) -> tuple[dict[int, str], set[(str, int)], set[str], dict[str, int]]:
+) -> tuple[dict[int, str], set[tuple[str, int]], set[str], dict[str, int]]:
     """Aggregates the information from guesses and hints."""
     correct = {}
     wrong_position = set()
@@ -147,29 +156,68 @@ def get_info_from_hints(
     return correct, wrong_position, not_in_word, max_occurrences
 
 
-def get_probability_map(
+def get_prob_and_iv(
     guess: str,
     possible_words: list[str],
-) -> dict[str, float]:
+) -> dict[str, dict[str, float]]:
     """
     Returns:
         dict of guess pattern keys and probability of occurrence in the word list.
     """
 
-    prob_map = {}
+    freq_map = {}
     # Loop over possible words
     for answer in possible_words:
         hint = get_hint_from_guess(guess, answer)   # Get the hint for the given guess on that answer
-        prob_map[hint] = prob_map.get(hint, 0) + 1  # Count how many times that hint occurs across the set of words
+        freq_map[hint] = freq_map.get(hint, 0) + 1  # Count how many times that hint occurs across the set of words
 
-    # Divide the frequency by the total for the probability of each hint occurring
-    return {hint: num / len(possible_words) for hint, num in prob_map.items()}
+    iv_map = {}
+    for hint, freq in freq_map.items():
+        iv_map[hint] = {}
+        # Divide the frequency by the total for the probability of each hint occurring
+        iv_map[hint]['p'] = freq / len(possible_words)
+        # Compute the information value based on the probability
+        iv_map[hint]['I'] = get_information_value(iv_map[hint]['p'])
+    return iv_map
+
+
+def get_information_value(prob: float) -> float:
+    """Returns the information value from a reduction in possibilities."""
+    return math.log(1 / prob, 2)
+
+
+def compute_entropy(
+    guess: str,
+    possible_words: list[str],
+) -> float:
+    """Sums probability x information value for possible words from the given guess."""
+    iv_map = get_prob_and_iv(guess, possible_words)
+    entropy = 0
+    for item in iv_map.values():
+        entropy += item['p'] * item['I']
+    return entropy
+
+
+def compute_many_entropies(
+    guesses: list[str],
+    possible_words: list[str],
+    num_processes: int = NUM_PROCESSES,
+) -> list[str]:
+    e_map = multi_process(
+        [(w, possible_words) for w in guesses],
+        compute_entropy,
+        zip_with=lambda w, _: w,
+        num_processes=num_processes,
+        verbose=False,
+    )
+    e_sorted = sorted([(word, H) for word, H in e_map.items()], key=lambda x: x[1], reverse=True)
+    return [word for word, H in e_sorted]
 
 
 def filter_words_from_info(
     word_list: list[str],
     correct: dict[int, str],
-    wrong_position: set[(str, int)],
+    wrong_position: set[tuple[str, int]],
     not_in_word: set[str],
     max_occurrences: dict[str, int],
 ) -> list[str]:
@@ -209,38 +257,109 @@ def load_words():
 def load_answers():
     return _load_str(ANSWER_LIST)
 
-
-def bot_play(word: str, word_list: Optional[list[str]] = None) -> int:
+def bot_play_random(
+    word: str,
+    word_list: Optional[list[str]] = None,
+    filter_by_list: Optional[list[str]] = None,
+):
     game = Game(word, word_list)
     while not game.is_over:
-        guess = random.choice(game.possible_words)
+        possible_answers = game.possible_words
+        if filter_by_list:
+            possible_answers = [w for w in possible_answers if w in filter_by_list]
+
+        guess = random.choice(possible_answers)
         game.make_guess(guess)
     if not game.is_won:
         return -1
     return len(game.guesses)
 
 
-def test_bot():
+def bot_play(
+    word: str,
+    word_list: Optional[list[str]] = None,
+    initial_guesses: list[str] = None,
+    filter_by_list: Optional[list[str]] = None,
+    verbose: bool = True,
+) -> int:
+    initial_guesses = initial_guesses or INITIAL_GUESSES
+    game = Game(word, word_list)
+
+    for guess in initial_guesses:
+        hint = game.make_guess(guess)
+        if verbose:
+            log.info(guess)
+            log.info(f"{hint} IV: {game.information_value}")
+
+    while not game.is_over:
+        possible_answers = game.possible_words
+        if filter_by_list:
+            possible_answers = [w for w in possible_answers if w in filter_by_list]
+
+        # If there's still a lot of uncertainty, don't pick a possible answer, just maximise entropy
+        iv = -1 * math.log(len(possible_answers) / len(filter_by_list or word_list), 2)
+        if iv < IV_THRESHOLD:
+            best_moves = compute_many_entropies(word_list, possible_answers)
+        else:
+            best_moves = compute_many_entropies(possible_answers, possible_answers)
+        guess = best_moves[0]
+        hint = game.make_guess(guess)  # Make a guess
+        if verbose:
+            log.info(guess)
+            log.info(f"{hint} IV: {iv}")
+    if not game.is_won:
+        return -1
+    return len(game.guesses)
+
+
+def test_bot_random():
     answers = load_answers()
     words = load_words()
-    scores = multi_process(
-        [(a, words) for a in answers],
-        bot_play,
-        num_processes=5,
-    )
 
     total = 0
     failures = 0
+    scores = multi_process(
+        [(w, words, answers) for w in answers],
+        bot_play_random,
+        num_processes=NUM_PROCESSES,
+    )
+
     for score in scores:
         if score == -1:
             failures += 1
             continue
         total += score
-    log.info(round(total / (len(answers) - failures), 2))
+    print('')
+    log.info(f"Avg Score: {round(total / (len(answers) - failures), 2)}")
     log.info(f"Failures {failures}")
 
 
-if __name__ == '__main__':
+def test_bot():
+    answers = load_answers()
+    words = load_words()
 
-    all_words = load_answers()
-    p_map = get_probability_map('table', all_words)
+    total = 0
+    failures = 0
+    start_time = time.time()
+    for i, word in enumerate(answers):
+        score = bot_play(
+            word,
+            words,
+            filter_by_list=answers,
+            verbose=False,
+        )
+        print(f"\rTesting Bot: {i} / {len(answers)} [{round(100 * i / len(answers))}%]", end="")
+        if score == -1:
+            failures += 1
+            print('')
+            log.error(word)
+            continue
+        total += score
+    print('')
+    log.info(f"Avg Score: {round(total / (len(answers) - failures), 2)}")
+    log.info(f"Failures {failures}")
+    log.info(f"Time Taken: {time.time() - start_time}s")
+
+
+if __name__ == '__main__':
+    pass
