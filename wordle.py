@@ -9,10 +9,9 @@ import requests
 import time
 from random import randrange
 from selenium import webdriver
-from selenium.webdriver.remote.webdriver import WebElement
 from selenium.webdriver.chrome.webdriver import WebDriver
 from enum import Enum
-from utils import log, chunks, multi_process, batch
+from utils import log, multi_process, batch
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 GuessMap = Dict[str, float]
