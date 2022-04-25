@@ -1,15 +1,14 @@
 import functools
 import os
 import math
-import time
 import random
 from utils import log, multi_process
 from typing import Optional
 
 MAX_GUESSES = 6
 NUM_PROCESSES = 5
-INITIAL_GUESSES = ['RATES']
-IV_THRESHOLD = 9
+INITIAL_GUESSES = ['CRANE']
+IV_THRESHOLD = 9.0
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
@@ -60,6 +59,13 @@ class Game:
     def information_value(self) -> float:
         return -1 * math.log(len(self.possible_words) / len(self.word_list), 2)
 
+    @property
+    def score(self) -> int:
+        if self.is_won:
+            return len(self.guesses)
+        else:
+            return -1
+
     def make_guess(self, guess: str) -> Optional[str]:
         guess = guess.upper()
 
@@ -72,6 +78,13 @@ class Game:
         self.guesses.append(guess)
         self.hints.append(hint)
         return hint
+
+    def __str__(self) -> str:
+        str_rep = "\n"
+        for i, guess in enumerate(self.guesses):
+            str_rep += f"{guess}\n"
+            str_rep += f"{self.hints[i]}\n"
+        return str_rep
 
 
 def get_hint_from_guess(guess: str, answer: str) -> str:
@@ -198,20 +211,19 @@ def compute_entropy(
     return entropy
 
 
+def sort_by_entropy(entropy_map: dict[str, float]) -> list[str]:
+    e_sorted = sorted([(word, H) for word, H in entropy_map.items()], key=lambda x: x[1], reverse=True)
+    return [word for word, H in e_sorted]
+
+
 def compute_many_entropies(
     guesses: list[str],
     possible_words: list[str],
-    num_processes: int = NUM_PROCESSES,
 ) -> list[str]:
-    e_map = multi_process(
-        [(w, possible_words) for w in guesses],
-        compute_entropy,
-        zip_with=lambda w, _: w,
-        num_processes=num_processes,
-        verbose=False,
-    )
-    e_sorted = sorted([(word, H) for word, H in e_map.items()], key=lambda x: x[1], reverse=True)
-    return [word for word, H in e_sorted]
+    e_map = {}
+    for guess in guesses:
+        e_map[guess] = compute_entropy(guess, possible_words)
+    return sort_by_entropy(e_map)
 
 
 def filter_words_from_info(
@@ -257,6 +269,26 @@ def load_words():
 def load_answers():
     return _load_str(ANSWER_LIST)
 
+
+def get_best_move(
+    possible_answers: list[str],
+    word_list: Optional[list[str]] = None,
+    answer_list: Optional[list[str]] = None,
+    iv_threshold: float = IV_THRESHOLD,
+) -> str:
+    word_list = word_list or load_words()
+    answer_list = answer_list or load_answers()
+    possible_answers = [w for w in possible_answers if w in answer_list]
+
+    # If there's still a lot of uncertainty, don't pick a possible answer, just maximise entropy
+    iv = get_information_value(len(possible_answers) / len(answer_list))
+    if iv < iv_threshold:
+        best_moves = compute_many_entropies(word_list, possible_answers)
+    else:
+        best_moves = compute_many_entropies(possible_answers, possible_answers)
+    return best_moves[0]
+
+
 def bot_play_random(
     word: str,
     word_list: Optional[list[str]] = None,
@@ -270,46 +302,32 @@ def bot_play_random(
 
         guess = random.choice(possible_answers)
         game.make_guess(guess)
-    if not game.is_won:
-        return -1
-    return len(game.guesses)
+    return game.score
 
 
 def bot_play(
     word: str,
     word_list: Optional[list[str]] = None,
-    initial_guesses: list[str] = None,
-    filter_by_list: Optional[list[str]] = None,
+    answer_list: Optional[list[str]] = None,
     verbose: bool = True,
+    initial_guesses: list[str] = None,
 ) -> int:
     initial_guesses = initial_guesses or INITIAL_GUESSES
+    word_list = word_list or load_words()
+    answer_list = answer_list or load_answers()
     game = Game(word, word_list)
 
     for guess in initial_guesses:
-        hint = game.make_guess(guess)
-        if verbose:
-            log.info(guess)
-            log.info(f"{hint} IV: {game.information_value}")
+        game.make_guess(guess)
 
     while not game.is_over:
-        possible_answers = game.possible_words
-        if filter_by_list:
-            possible_answers = [w for w in possible_answers if w in filter_by_list]
+        guess = get_best_move(game.possible_words, word_list, answer_list)
+        game.make_guess(guess)  # Make a guess
 
-        # If there's still a lot of uncertainty, don't pick a possible answer, just maximise entropy
-        iv = -1 * math.log(len(possible_answers) / len(filter_by_list or word_list), 2)
-        if iv < IV_THRESHOLD:
-            best_moves = compute_many_entropies(word_list, possible_answers)
-        else:
-            best_moves = compute_many_entropies(possible_answers, possible_answers)
-        guess = best_moves[0]
-        hint = game.make_guess(guess)  # Make a guess
-        if verbose:
-            log.info(guess)
-            log.info(f"{hint} IV: {iv}")
-    if not game.is_won:
-        return -1
-    return len(game.guesses)
+    if verbose:
+        log.info(str(game))
+
+    return game.score
 
 
 def test_bot_random():
@@ -340,26 +358,22 @@ def test_bot():
 
     total = 0
     failures = 0
-    start_time = time.time()
-    for i, word in enumerate(answers):
-        score = bot_play(
-            word,
-            words,
-            filter_by_list=answers,
-            verbose=False,
-        )
-        print(f"\rTesting Bot: {i} / {len(answers)} [{round(100 * i / len(answers))}%]", end="")
+
+    scores = multi_process(
+        [(w, words, answers, False) for w in answers],
+        bot_play,
+        num_processes=NUM_PROCESSES,
+    )
+
+    for score in scores:
         if score == -1:
             failures += 1
-            print('')
-            log.error(word)
             continue
         total += score
     print('')
     log.info(f"Avg Score: {round(total / (len(answers) - failures), 2)}")
     log.info(f"Failures {failures}")
-    log.info(f"Time Taken: {time.time() - start_time}s")
 
 
 if __name__ == '__main__':
-    pass
+    test_bot()

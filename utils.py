@@ -233,10 +233,11 @@ def batch(function: Callable):
 
 def print_progress(
     name: str,
-    progress: float,
+    i: int,
+    n: int,
 ):
     print(
-        f'\rProcessing: {name} [{round(100 * progress)}%]',
+        f'\rProcessing: {name} {i}/{n} [{round(100 * i / n)}%]',
         end="",
     )
 
@@ -260,7 +261,7 @@ def worker(
         try:
             output[index] = func(*args)
             if verbose:
-                print_progress(func.__name__, len(output) / num_jobs)
+                print_progress(func.__name__, len(output), num_jobs)
         except Exception as err:
             log.error(str(err))
             raise err
@@ -300,7 +301,7 @@ def multi_process(
     main_queue.join_thread()
 
     if verbose:
-        print_progress(func.__name__, 0)
+        print_progress(func.__name__, 0, len(input_list))
 
     for p in processes:
         p.join()

@@ -29,8 +29,6 @@ WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
 ANSWER_LIST = os.path.join(WORD_LIST_DIR, 'answers.txt')
 WORD_DB = os.path.join(WORD_LIST_DIR, 'uk_word_db.json')
-SCORE_ANSWERS_DB = os.path.join(WORD_LIST_DIR, 'scores-answers.json')
-SCORE_OVERALL_DB = os.path.join(WORD_LIST_DIR, 'scores-overall.json')
 
 
 class WrongWordSize(ValueError):
@@ -832,22 +830,6 @@ def test_bot(
     avg_score = round(sum(scores) / len(scores), 2)
     log.info(f"Time elapsed: {round(time.time() - start, 2)}s")
     log.info(f"Average score: {avg_score}")
-
-    if not k:
-        score_db = SCORE_ANSWERS_DB if filter_answers else SCORE_OVERALL_DB
-        with open(score_db, 'r') as f:
-            db = json.load(f)
-
-        value = {
-            ', '.join(initial_guesses): {
-                "score": avg_score,
-                "failed": [str(w) for w in failed],
-            }
-        }
-        db.update(value)
-
-        with open(score_db, 'w') as f:
-            json.dump(db, f, indent=4)
 
 
 def deep_probability_map(
