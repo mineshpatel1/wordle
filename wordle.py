@@ -26,15 +26,17 @@ class Game:
         self,
         answer: str,
         word_list: Optional[list[str]] = None,
+        max_guesses: int = MAX_GUESSES,
     ):
         self.answer = answer.upper()
         self.word_list = word_list or load_words()
+        self.max_guesses = max_guesses
         self.guesses: list[str] = []
         self.hints: list[str] = []
 
     @property
     def is_over(self) -> bool:
-        if len(self.guesses) >= MAX_GUESSES:
+        if len(self.guesses) >= self.max_guesses:
             return True
         return self.is_won
 
@@ -223,11 +225,11 @@ def sort_by_entropy(entropy_map: dict[str, float]) -> list[str]:
 def compute_many_entropies(
     guesses: list[str],
     possible_words: list[str],
-) -> list[str]:
+) -> dict[str, float]:
     e_map = {}
     for guess in guesses:
         e_map[guess] = compute_entropy(guess, possible_words)
-    return sort_by_entropy(e_map)
+    return e_map
 
 
 def filter_words_from_info(
@@ -274,6 +276,24 @@ def load_answers():
     return _load_str(ANSWER_LIST)
 
 
+def get_optimal_entropies(
+    possible_answers: list[str],
+    word_list: list[str] = None,
+    answer_list: list[str] = None,
+    iv_threshold: float = IV_THRESHOLD,
+) -> dict[str, float]:
+    # Filter based on known answers to Wordle
+    possible_answers = [w for w in possible_answers if w in answer_list]
+
+    # If there's still a lot of uncertainty, don't pick a possible answer, just maximise entropy
+    iv = get_information_value(len(possible_answers) / len(answer_list))
+    if iv < iv_threshold:
+        e_map = compute_many_entropies(word_list, possible_answers)
+    else:
+        e_map = compute_many_entropies(possible_answers, possible_answers)
+    return e_map
+
+
 def get_best_move(
     possible_answers: list[str],
     word_list: Optional[list[str]] = None,
@@ -282,14 +302,14 @@ def get_best_move(
 ) -> str:
     word_list = word_list or load_words()
     answer_list = answer_list or load_answers()
-    possible_answers = [w for w in possible_answers if w in answer_list]
 
-    # If there's still a lot of uncertainty, don't pick a possible answer, just maximise entropy
-    iv = get_information_value(len(possible_answers) / len(answer_list))
-    if iv < iv_threshold:
-        best_moves = compute_many_entropies(word_list, possible_answers)
-    else:
-        best_moves = compute_many_entropies(possible_answers, possible_answers)
+    e_map = get_optimal_entropies(
+        possible_answers=possible_answers,
+        word_list=word_list,
+        answer_list=answer_list,
+        iv_threshold=iv_threshold,
+    )
+    best_moves = sort_by_entropy(e_map)
     return best_moves[0]
 
 
