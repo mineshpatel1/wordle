@@ -8,7 +8,7 @@ from typing import Optional
 MAX_GUESSES = 6
 NUM_PROCESSES = 5
 INITIAL_GUESSES = ['CRANE']
-IV_THRESHOLD = 9.0
+EXPLORATION_THRESHOLD = 4  # Number of possible remaining answers to force a guess
 BASE_DIR = os.path.dirname(__file__)
 WORD_LIST_DIR = os.path.join(BASE_DIR, 'word_lists')
 WORD_LIST = os.path.join(WORD_LIST_DIR, 'uk.txt')
@@ -280,14 +280,13 @@ def get_optimal_entropies(
     possible_answers: list[str],
     word_list: list[str] = None,
     answer_list: list[str] = None,
-    iv_threshold: float = IV_THRESHOLD,
+    exploration_threshold: int = EXPLORATION_THRESHOLD,
 ) -> dict[str, float]:
     # Filter based on known answers to Wordle
     possible_answers = [w for w in possible_answers if w in answer_list]
 
     # If there's still a lot of uncertainty, don't pick a possible answer, just maximise entropy
-    iv = get_information_value(len(possible_answers) / len(answer_list))
-    if iv < iv_threshold:
+    if len(possible_answers) > exploration_threshold:
         e_map = compute_many_entropies(word_list, possible_answers)
     else:
         e_map = compute_many_entropies(possible_answers, possible_answers)
@@ -298,7 +297,7 @@ def get_best_move(
     possible_answers: list[str],
     word_list: Optional[list[str]] = None,
     answer_list: Optional[list[str]] = None,
-    iv_threshold: float = IV_THRESHOLD,
+    exploration_threshold: int = EXPLORATION_THRESHOLD,
 ) -> str:
     word_list = word_list or load_words()
     answer_list = answer_list or load_answers()
@@ -307,7 +306,7 @@ def get_best_move(
         possible_answers=possible_answers,
         word_list=word_list,
         answer_list=answer_list,
-        iv_threshold=iv_threshold,
+        exploration_threshold=exploration_threshold,
     )
     best_moves = sort_by_entropy(e_map)
     return best_moves[0]

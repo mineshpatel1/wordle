@@ -1,5 +1,4 @@
 import random
-import time
 from utils import log, multi_process
 from wordle import (
     Game,

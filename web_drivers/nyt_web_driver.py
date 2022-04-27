@@ -1,6 +1,11 @@
 import time
 from selenium import webdriver
+from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.webdriver import WebDriver
+from selenium.webdriver.remote.shadowroot import ShadowRoot
+from selenium.webdriver.remote.webelement import WebElement
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions
 from typing import Optional
 
 from wordle import (
@@ -16,15 +21,17 @@ from wordle import (
 )
 from utils import log
 
+DELAY = 0.2
+TIMEOUT = 5
+URL: str = "https://www.nytimes.com/games/wordle/index.html"
+GUESS_STATE = {
+    "absent": Hint.WRONG,
+    "present": Hint.MISPLACED,
+    "correct": Hint.CORRECT,
+}
+
 
 class NYTWebDriver:
-    URL: str = "https://www.nytimes.com/games/wordle/index.html"
-    GUESS_STATE = {
-        "absent": Hint.WRONG,
-        "present": Hint.MISPLACED,
-        "correct": Hint.CORRECT,
-    }
-
     def __init__(self):
         opts = webdriver.ChromeOptions()
         opts.add_argument("--incognito")
@@ -33,49 +40,40 @@ class NYTWebDriver:
         self.guesses: list[str] = []
         self.hints: list[str] = []
 
+    def click(self, element: WebElement, timeout: int = TIMEOUT):
+        WebDriverWait(self.driver, timeout).until(
+            expected_conditions.element_to_be_clickable(element)
+        )
+        element.click()
+
     def open_site(self):
-        self.driver.get(self.URL)
+        self.driver.get(URL)
         self.driver.maximize_window()
         self.close_popups()
 
-    def close_popups(self):
-        reject_cookies = self.driver.find_element_by_id('pz-gdpr-btn-reject')
-        reject_cookies.click()
+    def get_game_app(self) -> ShadowRoot:
+        return self.driver.find_element(By.TAG_NAME, 'game-app').shadow_root
 
-        close_modal = """
-                document
-                    .querySelector('game-app')
-                    .shadowRoot.querySelector('game-modal')
-                    .shadowRoot.querySelector('.overlay').click()
-                """
-        self.driver.execute_script(close_modal)
+    def close_popups(self):
+        reject_cookies = self.driver.find_element(By.ID, 'pz-gdpr-btn-reject')
+        self.click(reject_cookies)
+
+        game_modal = self.get_game_app().find_element(By.TAG_NAME, 'game-modal')
+        overlay = game_modal.shadow_root.find_element(By.CLASS_NAME, 'close-icon')
+        self.click(overlay)
 
     def type_key(self, letter: str):
-        hit_key = f"""
-        return document
-            .querySelector('game-app').shadowRoot
-            .querySelector('#game game-keyboard').shadowRoot
-            .querySelector('button[data-key="{letter}"]').click()
-        """
-        self.driver.execute_script(hit_key)
+        keyboard = self.get_game_app().find_element(By.TAG_NAME, 'game-keyboard').shadow_root
+        key = keyboard.find_element(By.CSS_SELECTOR, f'button[data-key="{letter.lower()}"]')
+        self.click(key)
 
     def has_won(self) -> bool:
-        has_won = """
-        return document
-            .querySelector('game-app').shadowRoot
-            .querySelectorAll('game-row[win]')
-        """
-        elements = self.driver.execute_script(has_won)
+        elements = self.get_game_app().find_elements(By.CSS_SELECTOR, 'game-row[win]')
         return len(elements) > 0
 
     def get_guess(self, word: str) -> tuple[Optional[str], Optional[str]]:
-        get_word_tiles = f"""
-        return document
-            .querySelector('game-app').shadowRoot
-            .querySelector('game-row[letters="{word}"]').shadowRoot
-            .querySelectorAll('game-tile')
-        """
-        tiles = self.driver.execute_script(get_word_tiles)
+        row = self.get_game_app().find_element(By.CSS_SELECTOR, f'game-row[letters="{word.lower()}"]').shadow_root
+        tiles = row.find_elements(By.TAG_NAME, 'game-tile')
         guess = ""
         hint = ""
         for i, tile in enumerate(tiles):
@@ -88,10 +86,10 @@ class NYTWebDriver:
                 return None, None
 
             guess += letter_str.upper()
-            hint += self.GUESS_STATE[state]
+            hint += GUESS_STATE[state]
         return guess, hint
 
-    def enter_word(self, word: str, delay: float = 0.3) -> bool:
+    def enter_word(self, word: str, delay: float = DELAY) -> bool:
         for letter in word:
             self.type_key(letter)
             time.sleep(delay)
@@ -103,7 +101,7 @@ class NYTWebDriver:
         self.hints.append(hint)
         return True
 
-    def clear_word(self, delay: float = 0.3):
+    def clear_word(self, delay: float = DELAY):
         for i in range(5):
             self.type_key("←")
             time.sleep(delay)
