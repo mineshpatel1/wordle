@@ -6,7 +6,7 @@ from selenium.webdriver.remote.shadowroot import ShadowRoot
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions
-from typing import Optional
+from typing import Callable, Optional
 
 from wordle import (
     filter_words_from_info,
@@ -40,6 +40,13 @@ class NYTWebDriver:
         self.guesses: list[str] = []
         self.hints: list[str] = []
 
+    def remove_element_by_selector(self, css_selector: str, timeout: int = TIMEOUT):
+        WebDriverWait(self.driver, timeout).until(
+            expected_conditions.element_to_be_clickable((By.CSS_SELECTOR, css_selector))
+        )
+        script = f"document.querySelector('{css_selector}').remove()"
+        self.driver.execute_script(script)
+
     def click(self, element: WebElement, timeout: int = TIMEOUT):
         WebDriverWait(self.driver, timeout).until(
             expected_conditions.element_to_be_clickable(element)
@@ -54,6 +61,15 @@ class NYTWebDriver:
     def get_game_app(self) -> ShadowRoot:
         return self.driver.find_element(By.TAG_NAME, 'game-app').shadow_root
 
+    def get_game_row(self, word: str) -> ShadowRoot:
+        return self.get_game_app().find_element(
+            By.CSS_SELECTOR, f'game-row[letters="{word.lower()}"]'
+        ).shadow_root
+
+    def get_game_tiles(self, word: str) -> list[WebElement]:
+        row = self.get_game_row(word)
+        return row.find_elements(By.TAG_NAME, 'game-tile')
+
     def close_popups(self):
         reject_cookies = self.driver.find_element(By.ID, 'pz-gdpr-btn-reject')
         self.click(reject_cookies)
@@ -61,6 +77,7 @@ class NYTWebDriver:
         game_modal = self.get_game_app().find_element(By.TAG_NAME, 'game-modal')
         overlay = game_modal.shadow_root.find_element(By.CLASS_NAME, 'close-icon')
         self.click(overlay)
+        self.remove_element_by_selector('.pz-snackbar')
 
     def type_key(self, letter: str):
         keyboard = self.get_game_app().find_element(By.TAG_NAME, 'game-keyboard').shadow_root
@@ -72,8 +89,7 @@ class NYTWebDriver:
         return len(elements) > 0
 
     def get_guess(self, word: str) -> tuple[Optional[str], Optional[str]]:
-        row = self.get_game_app().find_element(By.CSS_SELECTOR, f'game-row[letters="{word.lower()}"]').shadow_root
-        tiles = row.find_elements(By.TAG_NAME, 'game-tile')
+        tiles = self.get_game_tiles(word)
         guess = ""
         hint = ""
         for i, tile in enumerate(tiles):
@@ -106,6 +122,23 @@ class NYTWebDriver:
             self.type_key("←")
             time.sleep(delay)
 
+    def _gen_word_evaluated_check(self, word: str) -> Callable:
+        def _check_evaluated(_driver):
+            tiles = self.get_game_tiles(word)
+            for tile in tiles:
+                if tile.get_attribute('reveal') is None:
+                    return False
+                sub_tile = tile.shadow_root.find_element(By.CLASS_NAME, 'tile')
+                animation = sub_tile.get_attribute('data-animation')
+                if animation != 'idle':
+                    return False
+            return True
+        return _check_evaluated
+
+    def wait_for_word_evaluation(self, word: str):
+        WebDriverWait(self.driver, 20).until(self._gen_word_evaluated_check(word))
+        time.sleep(0.2)
+
     def play(
         self,
         initial_guesses: Optional[list[str]] = None,
@@ -115,11 +148,11 @@ class NYTWebDriver:
         answer_list = load_answers()
         all_words = load_words()
         self.open_site()
-        time.sleep(2)
+        time.sleep(1)
 
         for guess in initial_guesses:
             self.enter_word(guess.lower())
-            time.sleep(2)
+            self.wait_for_word_evaluation(guess)
 
         while len(self.guesses) < MAX_GUESSES and not self.has_won():
             info = get_info_from_hints(self.guesses, self.hints)
@@ -133,17 +166,18 @@ class NYTWebDriver:
             log.info(f"Best move: {word}")
             allowed = self.enter_word(str(word).lower())
 
-            # Initiate retry
+            # Initiate retry if the word is not allowed
             if not allowed:
                 time.sleep(1)
                 if word in possible_answers:
                     idx = possible_answers.index(word)
                     del possible_answers[idx]
-                del all_words[all_words.index(word)]
+                if word in all_words:
+                    del all_words[all_words.index(word)]
                 self.clear_word()
                 time.sleep(1)
             else:
-                time.sleep(3)
+                self.wait_for_word_evaluation(word)
 
         log.info(f"Game Over: {'Won' if self.has_won() else 'Lost'}")
         time.sleep(3)
