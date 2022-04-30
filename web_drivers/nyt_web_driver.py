@@ -123,6 +123,10 @@ class NYTWebDriver:
             time.sleep(delay)
 
     def _gen_word_evaluated_check(self, word: str) -> Callable:
+        """
+        Returns a function for Selenium to wait for a word to return
+        its evaluated hint.
+        """
         def _check_evaluated(_driver):
             tiles = self.get_game_tiles(word)
             for tile in tiles:

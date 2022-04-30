@@ -1,4 +1,5 @@
 import random
+import multiprocessing
 from utils import log, multi_process
 from wordle import (
     Game,
@@ -10,7 +11,7 @@ from wordle import (
     MAX_GUESSES,
     NUM_PROCESSES,
 )
-from typing import Optional
+from typing import Any, Callable, Optional
 
 DEFAULT_NUM_GAMES = 2
 
@@ -76,6 +77,7 @@ class MultiGame:
             [game.possible_answers for game in self.games if not game.is_over],
             self.word_list,
             self.answer_list,
+            parallelise=len(self.guesses) == 1,  # Only parallelise the first turn (by far the slowest)
         )
 
     def __str__(self) -> str:
@@ -107,18 +109,41 @@ def aggregate_entropies(entropy_maps: list[dict[str, float]]) -> dict[str, float
     return agg_entropy
 
 
+def parallelise_entropy_compute(
+    possible_answer_list: list[list[str]],
+    word_list: list[str],
+    answer_list: list[str],
+    num_processes: int = NUM_PROCESSES,  # Can set this to multiprocessing.cpu_count()
+) -> list[dict[str, float]]:
+    # Form list if argument tuples for use with Pool.starmap
+    input_args = [(pa, word_list, answer_list) for pa in possible_answer_list]
+    pool = multiprocessing.Pool(num_processes)
+    return pool.starmap(get_optimal_entropies, input_args)
+
+
 def get_best_move_multi(
     possible_answer_list: list[list[str]],
     word_list: list[str],
     answer_list: list[str],
+    parallelise: bool = False,
 ) -> str:
 
-    e_maps = multi_process(
-        [(p, word_list, answer_list) for p in possible_answer_list],
-        get_optimal_entropies,
-        num_processes=min([NUM_PROCESSES, len(possible_answer_list)]),
-        verbose=False,
-    )
+    # Performance only improves with multiprocessing on the slowest computations
+    # The fast computations are more efficient in serial, without communicating
+    # across threads.
+    if parallelise:
+        e_maps = parallelise_entropy_compute(
+            possible_answer_list,
+            word_list,
+            answer_list,
+        )
+    else:
+        # Compute in serial
+        e_maps = []
+        for possible_answers in possible_answer_list:
+            e_maps.append(
+                get_optimal_entropies(possible_answers, word_list, answer_list)
+            )
 
     agg_entropy = aggregate_entropies(e_maps)
     best_moves = sort_by_entropy(agg_entropy)
