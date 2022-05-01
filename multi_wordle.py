@@ -1,6 +1,6 @@
 import random
 import multiprocessing
-from utils import log, multi_process
+from utils import log
 from wordle import (
     Game,
     load_words,
@@ -11,7 +11,7 @@ from wordle import (
     MAX_GUESSES,
     NUM_PROCESSES,
 )
-from typing import Any, Callable, Optional
+from typing import Optional
 
 DEFAULT_NUM_GAMES = 2
 

@@ -57,6 +57,7 @@ class NYTWebDriver:
         self.driver.get(URL)
         self.driver.maximize_window()
         self.close_popups()
+        time.sleep(1)
 
     def get_game_app(self) -> ShadowRoot:
         return self.driver.find_element(By.TAG_NAME, 'game-app').shadow_root
@@ -152,7 +153,6 @@ class NYTWebDriver:
         answer_list = load_answers()
         all_words = load_words()
         self.open_site()
-        time.sleep(1)
 
         for guess in initial_guesses:
             self.enter_word(guess.lower())
